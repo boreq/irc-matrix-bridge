@@ -1,0 +1,32 @@
+database = "data/bridge.db"
+
+[matrix]
+homeserver = "https://matrix.example.org"
+user = "@bridge:example.org"
+password = "secret"
+data_dir = "data/matrix"
+store_passphrase = "another secret"
+
+[irc.libera]
+server = "irc.libera.chat"
+port = 6697
+tls = true
+nickname = "examplebridge"
+nick_password = "nickserv secret"
+
+[irc.oftc]
+server = "irc.oftc.net"
+nickname = "examplebridge"
+
+[[bridge]]
+name = "rust"
+matrix = ["!abcdefghijklmnop:example.org"]
+irc = [
+    { network = "libera", channel = "#rust" },
+    { network = "oftc", channel = "#rust" },
+]
+
+[[bridge]]
+name = "offtopic"
+matrix = ["!qrstuvwxyz:example.org", "!another:example.org"]
+irc = [{ network = "libera", channel = "#offtopic" }]
