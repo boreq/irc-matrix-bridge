@@ -1,9 +1,8 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::application::ports::{Clock, DeliveryWaker, MessageRepository, StoreOutcome};
-use crate::domain::message::Message;
-use crate::domain::topology::Topology;
+use crate::domain::bridges::Bridges;
+use crate::domain::message::{Message, MessageId};
 
 pub struct StoreReceivedMessage {
     pub message: Message,
@@ -11,13 +10,13 @@ pub struct StoreReceivedMessage {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StoreReceivedMessageOutcome {
-    Stored { destinations: usize },
+    Stored,
     NotBridged,
     Duplicate,
 }
 
 pub struct StoreReceivedMessageHandler {
-    topology: Arc<Topology>,
+    bridges: Arc<Bridges>,
     repository: Arc<dyn MessageRepository>,
     waker: Arc<dyn DeliveryWaker>,
     clock: Arc<dyn Clock>,
@@ -25,13 +24,13 @@ pub struct StoreReceivedMessageHandler {
 
 impl StoreReceivedMessageHandler {
     pub fn new(
-        topology: Arc<Topology>,
+        bridges: Arc<Bridges>,
         repository: Arc<dyn MessageRepository>,
         waker: Arc<dyn DeliveryWaker>,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
-            topology,
+            bridges,
             repository,
             waker,
             clock,
@@ -43,27 +42,24 @@ impl StoreReceivedMessageHandler {
         command: StoreReceivedMessage,
     ) -> anyhow::Result<StoreReceivedMessageOutcome> {
         let message = command.message;
-        let destinations = self.topology.destinations(&message.source);
-        if destinations.is_empty() {
+        let Some(destination) = self.bridges.destination(&message.source) else {
             return Ok(StoreReceivedMessageOutcome::NotBridged);
-        }
+        };
 
         let outcome = self
             .repository
-            .store(&message, &destinations, self.clock.now_ms())
+            .store(
+                MessageId::generate(),
+                &message,
+                &destination,
+                self.clock.now(),
+            )
             .await?;
         if outcome == StoreOutcome::Duplicate {
             return Ok(StoreReceivedMessageOutcome::Duplicate);
         }
 
-        let mut woken = HashSet::new();
-        for destination in &destinations {
-            if woken.insert(&destination.network) {
-                self.waker.wake(&destination.network);
-            }
-        }
-        Ok(StoreReceivedMessageOutcome::Stored {
-            destinations: destinations.len(),
-        })
+        self.waker.wake(&destination.network());
+        Ok(StoreReceivedMessageOutcome::Stored)
     }
 }

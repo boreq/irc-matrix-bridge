@@ -1,4 +1,5 @@
+pub mod bridges;
+pub mod channel;
 pub mod delivery;
-pub mod endpoint;
 pub mod message;
-pub mod topology;
+pub mod time;

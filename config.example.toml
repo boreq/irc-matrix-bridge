@@ -20,13 +20,15 @@ nickname = "examplebridge"
 
 [[bridge]]
 name = "rust"
-matrix = ["!abcdefghijklmnop:example.org"]
-irc = [
-    { network = "libera", channel = "#rust" },
-    { network = "oftc", channel = "#rust" },
-]
+matrix = "!abcdefghijklmnop:example.org"
+irc = { network = "libera", channel = "#rust" }
+
+[[bridge]]
+name = "rust-oftc"
+matrix = "!qrstuvwxyz:example.org"
+irc = { network = "oftc", channel = "#rust" }
 
 [[bridge]]
 name = "offtopic"
-matrix = ["!qrstuvwxyz:example.org", "!another:example.org"]
-irc = [{ network = "libera", channel = "#offtopic" }]
+matrix = "!another:example.org"
+irc = { network = "libera", channel = "#offtopic" }

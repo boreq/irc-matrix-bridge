@@ -6,13 +6,10 @@ use async_trait::async_trait;
 use irc::client::Sender;
 
 use crate::application::ports::MessageSender;
+use crate::domain::channel::{Channel, IrcChannel};
 use crate::domain::delivery::Delivery;
 
 const MAX_LINE_BYTES: usize = 400;
-
-pub fn normalize_channel(channel: &str) -> String {
-    channel.to_lowercase()
-}
 
 #[derive(Default)]
 struct Connection {
@@ -41,7 +38,7 @@ impl IrcMessageSender {
             .lock()
             .unwrap()
             .joined
-            .insert(normalize_channel(channel));
+            .insert(IrcChannel::normalize_name(channel));
     }
 
     pub fn left(&self, channel: &str) {
@@ -49,20 +46,23 @@ impl IrcMessageSender {
             .lock()
             .unwrap()
             .joined
-            .remove(&normalize_channel(channel));
+            .remove(&IrcChannel::normalize_name(channel));
     }
 }
 
 #[async_trait]
 impl MessageSender for IrcMessageSender {
     async fn send(&self, delivery: &Delivery) -> anyhow::Result<()> {
-        let channel = &delivery.destination.channel;
+        let Channel::Irc(destination) = &delivery.destination else {
+            bail!("{} is not an irc channel", delivery.destination);
+        };
+        let channel = destination.name();
         let connection = self.connection.lock().unwrap();
         let sender = connection
             .sender
             .as_ref()
             .ok_or_else(|| anyhow!("not connected"))?;
-        if !connection.joined.contains(&normalize_channel(channel)) {
+        if !connection.joined.contains(channel) {
             bail!("not joined to {channel}");
         }
 

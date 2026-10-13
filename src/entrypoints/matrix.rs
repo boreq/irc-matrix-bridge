@@ -12,12 +12,11 @@ use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler,
 };
 use crate::application::ports::DeliveryWaker;
-use crate::domain::endpoint::{Endpoint, NetworkId};
+use crate::domain::channel::{Channel, MatrixRoom, Network};
 use crate::domain::message::{Message, MessageKind};
 
 pub struct MatrixEntrypoint {
     pub client: Client,
-    pub network: NetworkId,
     pub rooms: Vec<OwnedRoomId>,
     pub skip_backlog: bool,
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
@@ -60,36 +59,32 @@ impl MatrixEntrypoint {
                 ),
             }
         }
-        self.waker.wake(&self.network);
+        self.waker.wake(&Network::Matrix);
     }
 
     fn register_handlers(&self) {
         let rooms: Arc<HashSet<OwnedRoomId>> = Arc::new(self.rooms.iter().cloned().collect());
 
         let handler = self.store_received_message.clone();
-        let network = self.network.clone();
         let bridged = rooms.clone();
         self.client.add_event_handler(
             move |event: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
                 let handler = handler.clone();
-                let network = network.clone();
                 let bridged = bridged.clone();
                 async move {
                     if !bridged.contains(room.room_id()) || client.user_id() == Some(&event.sender)
                     {
                         return;
                     }
-                    on_room_message(event, room, network, &handler).await;
+                    on_room_message(event, room, &handler).await;
                 }
             },
         );
 
         let waker = self.waker.clone();
-        let network = self.network.clone();
         self.client.add_event_handler(
             move |event: StrippedRoomMemberEvent, room: Room, client: Client| {
                 let waker = waker.clone();
-                let network = network.clone();
                 let bridged = rooms.clone();
                 async move {
                     if Some(event.state_key.as_ref()) != client.user_id()
@@ -100,7 +95,7 @@ impl MatrixEntrypoint {
                     match room.join().await {
                         Ok(()) => {
                             tracing::info!(room_id = %room.room_id(), "accepted invite");
-                            waker.wake(&network);
+                            waker.wake(&Network::Matrix);
                         }
                         Err(error) => {
                             tracing::warn!(room_id = %room.room_id(), "joining failed: {error}")
@@ -115,23 +110,22 @@ impl MatrixEntrypoint {
 async fn on_room_message(
     event: OriginalSyncRoomMessageEvent,
     room: Room,
-    network: NetworkId,
     handler: &StoreReceivedMessageHandler,
 ) {
     let (kind, body) = match &event.content.msgtype {
-        MessageType::Emote(emote) => (MessageKind::Emote, emote.body.clone()),
+        MessageType::Emote(emote) => (MessageKind::Action, emote.body.clone()),
         msgtype @ (MessageType::Image(_)
         | MessageType::File(_)
         | MessageType::Video(_)
         | MessageType::Audio(_)) => (
-            MessageKind::Text,
+            MessageKind::Normal,
             format!(
                 "[{}] {}",
                 msgtype.msgtype().trim_start_matches("m."),
                 msgtype.body()
             ),
         ),
-        msgtype => (MessageKind::Text, msgtype.body().to_owned()),
+        msgtype => (MessageKind::Normal, msgtype.body().to_owned()),
     };
 
     let sender = match room.get_member_no_sync(&event.sender).await {
@@ -140,7 +134,7 @@ async fn on_room_message(
     };
 
     let message = Message {
-        source: Endpoint::new(network, room.room_id().as_str()),
+        source: Channel::Matrix(MatrixRoom::new(room.room_id().as_str())),
         external_id: Some(event.event_id.to_string()),
         sender,
         kind,

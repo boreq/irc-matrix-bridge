@@ -11,6 +11,7 @@ use matrix_sdk::{Client, RoomState};
 use serde::Deserialize;
 
 use crate::application::ports::MessageSender;
+use crate::domain::channel::Channel;
 use crate::domain::delivery::Delivery;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -130,7 +131,10 @@ impl MatrixMessageSender {
 #[async_trait]
 impl MessageSender for MatrixMessageSender {
     async fn send(&self, delivery: &Delivery) -> anyhow::Result<()> {
-        let room_id = RoomId::parse(&delivery.destination.channel)?;
+        let Channel::Matrix(room) = &delivery.destination else {
+            bail!("{} is not a matrix room", delivery.destination);
+        };
+        let room_id = RoomId::parse(&room.id)?;
         let Some(room) = self.client.get_room(&room_id) else {
             bail!("unknown room {room_id}");
         };
@@ -138,7 +142,7 @@ impl MessageSender for MatrixMessageSender {
             bail!("not joined to {room_id}");
         }
 
-        let txn_id = OwnedTransactionId::from(format!("irc-bridge-{}", delivery.id.0));
+        let txn_id = OwnedTransactionId::from(format!("irc-bridge-{}", delivery.id));
         room.send(RoomMessageEventContent::text_plain(
             delivery.message.relay_text(),
         ))

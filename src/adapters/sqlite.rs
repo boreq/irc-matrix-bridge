@@ -3,40 +3,38 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
+use uuid::Uuid;
 
 use crate::application::ports::{MessageRepository, StoreOutcome};
-use crate::domain::delivery::{Delivery, DeliveryId};
-use crate::domain::endpoint::{Endpoint, NetworkId};
-use crate::domain::message::{Message, MessageKind};
+use crate::domain::channel::{Channel, IrcChannel, MatrixRoom, Network};
+use crate::domain::delivery::Delivery;
+use crate::domain::message::{Message, MessageId, MessageKind};
+use crate::domain::time::DateTime;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS messages (
-    id              INTEGER PRIMARY KEY,
-    source_network  TEXT    NOT NULL,
-    source_channel  TEXT    NOT NULL,
-    external_id     TEXT,
-    sender          TEXT    NOT NULL,
-    kind            TEXT    NOT NULL,
-    body            TEXT    NOT NULL,
-    received_at     INTEGER NOT NULL,
+    seq                  INTEGER PRIMARY KEY, -- insertion order; ids are random
+    id                   TEXT    NOT NULL UNIQUE,
+    source_network       TEXT    NOT NULL,
+    source_channel       TEXT    NOT NULL,
+    external_id          TEXT,
+    sender               TEXT    NOT NULL,
+    kind                 TEXT    NOT NULL,
+    body                 TEXT    NOT NULL,
+    received_at          INTEGER NOT NULL,
+    destination_network  TEXT    NOT NULL,
+    destination_channel  TEXT    NOT NULL,
+    status               TEXT    NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
+    attempts             INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at      INTEGER NOT NULL,
+    last_error           TEXT,
+    delivered_at         INTEGER,
     UNIQUE (source_network, external_id)
 );
 
-CREATE TABLE IF NOT EXISTS deliveries (
-    id               INTEGER PRIMARY KEY,
-    message_id       INTEGER NOT NULL REFERENCES messages (id),
-    network          TEXT    NOT NULL,
-    channel          TEXT    NOT NULL,
-    status           TEXT    NOT NULL CHECK (status IN ('pending', 'delivered', 'failed')),
-    attempts         INTEGER NOT NULL DEFAULT 0,
-    next_attempt_at  INTEGER NOT NULL,
-    last_error       TEXT,
-    delivered_at     INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS deliveries_pending
-    ON deliveries (network, channel, id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS messages_pending
+    ON messages (destination_network, destination_channel, seq) WHERE status = 'pending';
 ";
 
 #[derive(Clone)]
@@ -61,7 +59,6 @@ impl SqliteMessageRepository {
     }
 
     fn init(conn: Connection) -> anyhow::Result<Self> {
-        conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
@@ -88,145 +85,129 @@ impl SqliteMessageRepository {
 impl MessageRepository for SqliteMessageRepository {
     async fn store(
         &self,
+        id: MessageId,
         message: &Message,
-        destinations: &[Endpoint],
-        now: i64,
+        destination: &Channel,
+        now: DateTime,
     ) -> anyhow::Result<StoreOutcome> {
         let message = message.clone();
-        let destinations = destinations.to_vec();
+        let (source_network, source_channel) = channel_columns(&message.source);
+        let (destination_network, destination_channel) = channel_columns(destination);
         self.with_conn(move |conn| {
-            let tx = conn.transaction()?;
-            let inserted = tx.execute(
+            let inserted = conn.execute(
                 "INSERT INTO messages
-                     (source_network, source_channel, external_id, sender, kind, body, received_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     (id, source_network, source_channel, external_id, sender, kind, body,
+                      received_at, destination_network, destination_channel, status,
+                      next_attempt_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'pending', ?8)
                  ON CONFLICT (source_network, external_id) DO NOTHING",
                 params![
-                    message.source.network.as_str(),
-                    message.source.channel,
+                    id.to_string(),
+                    source_network,
+                    source_channel,
                     message.external_id,
                     message.sender,
-                    message.kind.as_str(),
+                    kind_column(message.kind),
                     message.body,
-                    now,
+                    now.unix_millis(),
+                    destination_network,
+                    destination_channel,
                 ],
             )?;
-            if inserted == 0 {
-                return Ok(StoreOutcome::Duplicate);
-            }
-
-            let message_id = tx.last_insert_rowid();
-            {
-                let mut insert = tx.prepare(
-                    "INSERT INTO deliveries (message_id, network, channel, status, next_attempt_at)
-                     VALUES (?1, ?2, ?3, 'pending', ?4)",
-                )?;
-                for destination in &destinations {
-                    insert.execute(params![
-                        message_id,
-                        destination.network.as_str(),
-                        destination.channel,
-                        now,
-                    ])?;
-                }
-            }
-            tx.commit()?;
-            Ok(StoreOutcome::Stored)
+            Ok(if inserted == 0 {
+                StoreOutcome::Duplicate
+            } else {
+                StoreOutcome::Stored
+            })
         })
         .await
     }
 
-    async fn pending_channels(&self, network: &NetworkId) -> anyhow::Result<Vec<String>> {
-        let network = network.as_str().to_owned();
+    async fn pending_channels(&self, network: &Network) -> anyhow::Result<Vec<Channel>> {
+        let network = network_column(network);
         self.with_conn(move |conn| {
             let mut stmt = conn.prepare(
-                "SELECT DISTINCT channel FROM deliveries
-                 WHERE network = ?1 AND status = 'pending'",
+                "SELECT DISTINCT destination_channel FROM messages
+                 WHERE destination_network = ?1 AND status = 'pending'",
             )?;
-            let channels = stmt
-                .query_map([network], |row| row.get(0))?
-                .collect::<Result<_, _>>()?;
-            Ok(channels)
+            let names = stmt
+                .query_map([&network], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            names
+                .into_iter()
+                .map(|name| channel_from_columns(&network, name))
+                .collect()
         })
         .await
     }
 
-    async fn pending_deliveries(
-        &self,
-        destination: &Endpoint,
-        limit: usize,
-    ) -> anyhow::Result<Vec<Delivery>> {
+    async fn next_delivery(&self, destination: &Channel) -> anyhow::Result<Option<Delivery>> {
         let destination = destination.clone();
+        let (network, channel) = channel_columns(&destination);
         self.with_conn(move |conn| {
-            let mut stmt = conn.prepare(
-                "SELECT d.id, d.attempts, d.next_attempt_at,
-                        m.source_network, m.source_channel, m.external_id,
-                        m.sender, m.kind, m.body
-                 FROM deliveries d JOIN messages m ON m.id = d.message_id
-                 WHERE d.network = ?1 AND d.channel = ?2 AND d.status = 'pending'
-                 ORDER BY d.id
-                 LIMIT ?3",
-            )?;
-            let rows = stmt.query_map(
-                params![
-                    destination.network.as_str(),
-                    destination.channel,
-                    limit as i64
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, u32>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, Option<String>>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, String>(8)?,
-                    ))
-                },
-            )?;
+            let row = conn
+                .query_row(
+                    "SELECT id, attempts, next_attempt_at, source_network, source_channel,
+                            external_id, sender, kind, body
+                     FROM messages
+                     WHERE destination_network = ?1 AND destination_channel = ?2
+                       AND status = 'pending'
+                     ORDER BY seq
+                     LIMIT 1",
+                    params![network, channel],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, u32>(1)?,
+                            row.get::<_, i64>(2)?,
+                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, String>(6)?,
+                            row.get::<_, String>(7)?,
+                            row.get::<_, String>(8)?,
+                        ))
+                    },
+                )
+                .optional()?;
 
-            let mut deliveries = Vec::new();
-            for row in rows {
-                let (
-                    id,
-                    attempts,
-                    next_attempt_at,
-                    network,
-                    channel,
+            let Some((
+                id,
+                attempts,
+                next_attempt_at,
+                source_network,
+                source_channel,
+                external_id,
+                sender,
+                kind,
+                body,
+            )) = row
+            else {
+                return Ok(None);
+            };
+            Ok(Some(Delivery {
+                id: id_from_column(&id)?,
+                message: Message {
+                    source: channel_from_columns(&source_network, source_channel)?,
                     external_id,
                     sender,
-                    kind,
+                    kind: kind_from_column(&kind)?,
                     body,
-                ) = row?;
-                let kind = MessageKind::parse(&kind)
-                    .with_context(|| format!("unknown message kind `{kind}`"))?;
-                deliveries.push(Delivery {
-                    id: DeliveryId(id),
-                    message: Message {
-                        source: Endpoint::new(NetworkId::new(network), channel),
-                        external_id,
-                        sender,
-                        kind,
-                        body,
-                    },
-                    destination: destination.clone(),
-                    attempts,
-                    next_attempt_at,
-                });
-            }
-            Ok(deliveries)
+                },
+                destination,
+                attempts,
+                next_attempt_at: DateTime::from_unix_millis(next_attempt_at)
+                    .with_context(|| format!("invalid timestamp {next_attempt_at}"))?,
+            }))
         })
         .await
     }
 
-    async fn mark_delivered(&self, id: DeliveryId, now: i64) -> anyhow::Result<()> {
+    async fn mark_delivered(&self, id: MessageId, now: DateTime) -> anyhow::Result<()> {
         self.with_conn(move |conn| {
             conn.execute(
-                "UPDATE deliveries SET status = 'delivered', delivered_at = ?2 WHERE id = ?1",
-                params![id.0, now],
+                "UPDATE messages SET status = 'delivered', delivered_at = ?2 WHERE id = ?1",
+                params![id.to_string(), now.unix_millis()],
             )?;
             Ok(())
         })
@@ -235,30 +216,35 @@ impl MessageRepository for SqliteMessageRepository {
 
     async fn schedule_retry(
         &self,
-        id: DeliveryId,
+        id: MessageId,
         attempts: u32,
-        next_attempt_at: i64,
+        next_attempt_at: DateTime,
         error: &str,
     ) -> anyhow::Result<()> {
         let error = error.to_owned();
         self.with_conn(move |conn| {
             conn.execute(
-                "UPDATE deliveries SET attempts = ?2, next_attempt_at = ?3, last_error = ?4
+                "UPDATE messages SET attempts = ?2, next_attempt_at = ?3, last_error = ?4
                  WHERE id = ?1",
-                params![id.0, attempts, next_attempt_at, error],
+                params![
+                    id.to_string(),
+                    attempts,
+                    next_attempt_at.unix_millis(),
+                    error
+                ],
             )?;
             Ok(())
         })
         .await
     }
 
-    async fn mark_failed(&self, id: DeliveryId, attempts: u32, error: &str) -> anyhow::Result<()> {
+    async fn mark_failed(&self, id: MessageId, attempts: u32, error: &str) -> anyhow::Result<()> {
         let error = error.to_owned();
         self.with_conn(move |conn| {
             conn.execute(
-                "UPDATE deliveries SET status = 'failed', attempts = ?2, last_error = ?3
+                "UPDATE messages SET status = 'failed', attempts = ?2, last_error = ?3
                  WHERE id = ?1",
-                params![id.0, attempts, error],
+                params![id.to_string(), attempts, error],
             )?;
             Ok(())
         })
@@ -266,20 +252,78 @@ impl MessageRepository for SqliteMessageRepository {
     }
 }
 
+fn id_from_column(id: &str) -> anyhow::Result<MessageId> {
+    let uuid = Uuid::parse_str(id).with_context(|| format!("invalid message id `{id}`"))?;
+    Ok(MessageId(uuid))
+}
+
+fn kind_column(kind: MessageKind) -> &'static str {
+    match kind {
+        MessageKind::Normal => "normal",
+        MessageKind::Action => "action",
+    }
+}
+
+fn kind_from_column(kind: &str) -> anyhow::Result<MessageKind> {
+    match kind {
+        "normal" => Ok(MessageKind::Normal),
+        "action" => Ok(MessageKind::Action),
+        _ => anyhow::bail!("unknown message kind `{kind}`"),
+    }
+}
+
+fn network_column(network: &Network) -> String {
+    match network {
+        Network::Matrix => "matrix".to_owned(),
+        Network::Irc(name) => format!("irc:{name}"),
+    }
+}
+
+fn channel_columns(channel: &Channel) -> (String, String) {
+    let name = match channel {
+        Channel::Matrix(room) => room.id.as_str(),
+        Channel::Irc(channel) => channel.name(),
+    };
+    (network_column(&channel.network()), name.to_owned())
+}
+
+fn channel_from_columns(network: &str, name: String) -> anyhow::Result<Channel> {
+    if network == "matrix" {
+        return Ok(Channel::Matrix(MatrixRoom::new(name)));
+    }
+    let irc_network = network
+        .strip_prefix("irc:")
+        .with_context(|| format!("unknown network `{network}`"))?;
+    Ok(Channel::Irc(IrcChannel::new(irc_network, &name)))
+}
+
 #[cfg(test)]
 impl SqliteMessageRepository {
-    fn delivery_status(&self, id: DeliveryId) -> Option<String> {
-        use rusqlite::OptionalExtension;
-
+    fn delivery_status(&self, id: MessageId) -> Option<String> {
         self.conn
             .lock()
             .unwrap()
             .query_row(
-                "SELECT status FROM deliveries WHERE id = ?1",
-                [id.0],
+                "SELECT status FROM messages WHERE id = ?1",
+                [id.to_string()],
                 |row| row.get(0),
             )
             .optional()
+            .unwrap()
+    }
+
+    fn pending_count(&self, destination: &Channel) -> usize {
+        let (network, channel) = channel_columns(destination);
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages
+                 WHERE destination_network = ?1 AND destination_channel = ?2
+                   AND status = 'pending'",
+                params![network, channel],
+                |row| row.get(0),
+            )
             .unwrap()
     }
 }
@@ -290,86 +334,100 @@ mod tests {
 
     fn message(external_id: Option<&str>) -> Message {
         Message {
-            source: Endpoint::new(NetworkId::new("matrix"), "!room:example.org"),
+            source: Channel::Matrix(MatrixRoom::new("!room:example.org")),
             external_id: external_id.map(Into::into),
             sender: "alice".into(),
-            kind: MessageKind::Emote,
+            kind: MessageKind::Action,
             body: "waves".into(),
         }
     }
 
-    fn irc(channel: &str) -> Endpoint {
-        Endpoint::new(NetworkId::new("irc:libera"), channel)
+    fn irc(channel: &str) -> Channel {
+        Channel::Irc(IrcChannel::new("libera", channel))
+    }
+
+    fn at(unix_millis: i64) -> DateTime {
+        DateTime::from_unix_millis(unix_millis).unwrap()
     }
 
     #[tokio::test]
-    async fn stores_message_and_one_delivery_per_destination() {
+    async fn stores_message_with_a_pending_delivery() {
         let repo = SqliteMessageRepository::in_memory().unwrap();
+        let id = MessageId::generate();
         let outcome = repo
-            .store(&message(Some("$event")), &[irc("#a"), irc("#b")], 10)
+            .store(id, &message(Some("$event")), &irc("#a"), at(10))
             .await
             .unwrap();
         assert_eq!(outcome, StoreOutcome::Stored);
 
-        let mut channels = repo
-            .pending_channels(&NetworkId::new("irc:libera"))
+        let channels = repo
+            .pending_channels(&Network::Irc("libera".into()))
             .await
             .unwrap();
-        channels.sort();
-        assert_eq!(channels, vec!["#a", "#b"]);
+        assert_eq!(channels, vec![irc("#a")]);
 
-        let pending = repo.pending_deliveries(&irc("#a"), 10).await.unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].message, message(Some("$event")));
-        assert_eq!(pending[0].next_attempt_at, 10);
+        assert_eq!(repo.pending_count(&irc("#a")), 1);
+        let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
+        assert_eq!(next.id, id);
+        assert_eq!(next.message, message(Some("$event")));
+        assert_eq!(next.destination, irc("#a"));
+        assert_eq!(next.next_attempt_at, at(10));
     }
 
     #[tokio::test]
     async fn drops_duplicate_external_ids_but_not_messages_without_one() {
         let repo = SqliteMessageRepository::in_memory().unwrap();
-        let dest = [irc("#a")];
-        assert_eq!(
-            repo.store(&message(Some("$e")), &dest, 0).await.unwrap(),
-            StoreOutcome::Stored
-        );
-        assert_eq!(
-            repo.store(&message(Some("$e")), &dest, 0).await.unwrap(),
-            StoreOutcome::Duplicate
-        );
-        assert_eq!(
-            repo.store(&message(None), &dest, 0).await.unwrap(),
-            StoreOutcome::Stored
-        );
-        assert_eq!(
-            repo.store(&message(None), &dest, 0).await.unwrap(),
-            StoreOutcome::Stored
-        );
-        assert_eq!(
-            repo.pending_deliveries(&irc("#a"), 10).await.unwrap().len(),
-            3
-        );
+        let store = |external_id| {
+            let repo = repo.clone();
+            async move {
+                repo.store(
+                    MessageId::generate(),
+                    &message(external_id),
+                    &irc("#a"),
+                    at(0),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        assert_eq!(store(Some("$e")).await, StoreOutcome::Stored);
+        assert_eq!(store(Some("$e")).await, StoreOutcome::Duplicate);
+        assert_eq!(store(None).await, StoreOutcome::Stored);
+        assert_eq!(store(None).await, StoreOutcome::Stored);
+        assert_eq!(repo.pending_count(&irc("#a")), 3);
     }
 
     #[tokio::test]
-    async fn status_transitions_remove_from_pending() {
+    async fn next_delivery_is_oldest_pending_and_status_transitions_advance_it() {
         let repo = SqliteMessageRepository::in_memory().unwrap();
-        repo.store(&message(None), &[irc("#a")], 0).await.unwrap();
-        repo.store(&message(None), &[irc("#a")], 0).await.unwrap();
-        let pending = repo.pending_deliveries(&irc("#a"), 10).await.unwrap();
-        let (first, second) = (pending[0].id, pending[1].id);
-
-        repo.schedule_retry(first, 1, 500, "boom").await.unwrap();
-        let pending = repo.pending_deliveries(&irc("#a"), 10).await.unwrap();
-        assert_eq!((pending[0].attempts, pending[0].next_attempt_at), (1, 500));
-
-        repo.mark_delivered(first, 600).await.unwrap();
-        repo.mark_failed(second, 30, "gone").await.unwrap();
-        assert!(
-            repo.pending_deliveries(&irc("#a"), 10)
+        // The ids sort opposite to insertion order, so ordering must not rely on them.
+        let first = MessageId(Uuid::from_u128(2));
+        let second = MessageId(Uuid::from_u128(1));
+        for id in [first, second] {
+            repo.store(id, &message(None), &irc("#a"), at(0))
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap();
+        }
+
+        let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
+        assert_eq!(next.id, first);
+
+        repo.schedule_retry(first, 1, at(500), "boom")
+            .await
+            .unwrap();
+        let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
+        assert_eq!(
+            (next.id, next.attempts, next.next_attempt_at),
+            (first, 1, at(500))
         );
+
+        repo.mark_delivered(first, at(600)).await.unwrap();
+        let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
+        assert_eq!(next.id, second);
+
+        repo.mark_failed(second, 30, "gone").await.unwrap();
+        assert!(repo.next_delivery(&irc("#a")).await.unwrap().is_none());
         assert_eq!(repo.delivery_status(first).as_deref(), Some("delivered"));
         assert_eq!(repo.delivery_status(second).as_deref(), Some("failed"));
     }

@@ -7,12 +7,12 @@ use irc::client::data::Config as IrcClientConfig;
 use irc::proto::{Command, Message as IrcMessage};
 use serde::Deserialize;
 
-use crate::adapters::irc::{IrcMessageSender, normalize_channel};
+use crate::adapters::irc::IrcMessageSender;
 use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler, StoreReceivedMessageOutcome,
 };
 use crate::application::ports::DeliveryWaker;
-use crate::domain::endpoint::{Endpoint, NetworkId};
+use crate::domain::channel::{Channel, IrcChannel, Network};
 use crate::domain::message::{Message, MessageKind};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -36,7 +36,7 @@ fn default_tls() -> bool {
 }
 
 pub struct IrcEntrypoint {
-    pub network: NetworkId,
+    pub network: String,
     pub settings: IrcSettings,
     pub channels: Vec<String>,
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
@@ -107,7 +107,7 @@ impl IrcEntrypoint {
                     tracing::info!(network = %self.network, %channel, "joined");
                     self.sender.joined(channel);
                 }
-                self.waker.wake(&self.network);
+                self.waker.wake(&Network::Irc(self.network.clone()));
             }
             Command::PART(channels, _) if from_me => {
                 channels
@@ -134,7 +134,7 @@ impl IrcEntrypoint {
 
     async fn store(&self, channel: &str, nick: &str, kind: MessageKind, body: String) {
         let message = Message {
-            source: Endpoint::new(self.network.clone(), normalize_channel(channel)),
+            source: Channel::Irc(IrcChannel::new(&self.network, channel)),
             external_id: None,
             sender: nick.to_owned(),
             kind,
@@ -146,7 +146,7 @@ impl IrcEntrypoint {
             .await
         {
             Ok(
-                StoreReceivedMessageOutcome::Stored { .. }
+                StoreReceivedMessageOutcome::Stored
                 | StoreReceivedMessageOutcome::NotBridged
                 | StoreReceivedMessageOutcome::Duplicate,
             ) => {}
@@ -161,9 +161,9 @@ fn parse_privmsg(text: &str) -> Option<(MessageKind, String)> {
     let (kind, text) = match text.strip_prefix('\u{1}') {
         Some(ctcp) => {
             let action = ctcp.trim_end_matches('\u{1}').strip_prefix("ACTION ")?;
-            (MessageKind::Emote, action)
+            (MessageKind::Action, action)
         }
-        None => (MessageKind::Text, text),
+        None => (MessageKind::Normal, text),
     };
     let text = strip_formatting(text);
     (!text.trim().is_empty()).then_some((kind, text))
@@ -208,10 +208,13 @@ mod tests {
     fn parses_actions_and_drops_other_ctcp() {
         assert_eq!(
             parse_privmsg("\u{1}ACTION waves\u{1}"),
-            Some((MessageKind::Emote, "waves".into()))
+            Some((MessageKind::Action, "waves".into()))
         );
         assert_eq!(parse_privmsg("\u{1}VERSION\u{1}"), None);
-        assert_eq!(parse_privmsg("hi"), Some((MessageKind::Text, "hi".into())));
+        assert_eq!(
+            parse_privmsg("hi"),
+            Some((MessageKind::Normal, "hi".into()))
+        );
     }
 
     #[test]
