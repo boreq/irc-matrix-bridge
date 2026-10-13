@@ -4,23 +4,25 @@ use std::time::Duration;
 use chrono::{TimeDelta, Utc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DateTime(chrono::DateTime<Utc>);
+pub struct DateTime {
+    dt: chrono::DateTime<Utc>,
+}
 
 impl DateTime {
     pub fn now() -> Self {
-        Self(Utc::now())
+        Self { dt: Utc::now() }
     }
 
     pub fn from_unix_millis(unix_millis: i64) -> Option<Self> {
-        chrono::DateTime::from_timestamp_millis(unix_millis).map(Self)
+        chrono::DateTime::from_timestamp_millis(unix_millis).map(|dt| Self { dt })
     }
 
     pub fn unix_millis(self) -> i64 {
-        self.0.timestamp_millis()
+        self.dt.timestamp_millis()
     }
 
     pub fn duration_until(self, later: DateTime) -> Duration {
-        (later.0 - self.0).to_std().unwrap_or(Duration::ZERO)
+        (later.dt - self.dt).to_std().unwrap_or(Duration::ZERO)
     }
 }
 
@@ -29,11 +31,12 @@ impl Add<Duration> for DateTime {
 
     fn add(self, duration: Duration) -> Self {
         let delta = TimeDelta::from_std(duration).unwrap_or(TimeDelta::MAX);
-        Self(
-            self.0
+        Self {
+            dt: self
+                .dt
                 .checked_add_signed(delta)
                 .unwrap_or(chrono::DateTime::<Utc>::MAX_UTC),
-        )
+        }
     }
 }
 

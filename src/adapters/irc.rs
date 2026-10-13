@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use irc::client::Sender;
 
 use crate::application::ports::MessageSender;
-use crate::domain::channel::{Channel, IrcChannel};
+use crate::domain::channel::{Channel, IrcChannelName};
 use crate::domain::delivery::Delivery;
 
 const MAX_LINE_BYTES: usize = 400;
@@ -14,7 +14,7 @@ const MAX_LINE_BYTES: usize = 400;
 #[derive(Default)]
 struct Connection {
     sender: Option<Sender>,
-    joined: HashSet<String>,
+    joined: HashSet<IrcChannelName>,
 }
 
 #[derive(Default)]
@@ -33,28 +33,20 @@ impl IrcMessageSender {
         *self.connection.lock().unwrap() = Connection::default();
     }
 
-    pub fn joined(&self, channel: &str) {
-        self.connection
-            .lock()
-            .unwrap()
-            .joined
-            .insert(IrcChannel::normalize_name(channel));
+    pub fn joined(&self, channel: IrcChannelName) {
+        self.connection.lock().unwrap().joined.insert(channel);
     }
 
-    pub fn left(&self, channel: &str) {
-        self.connection
-            .lock()
-            .unwrap()
-            .joined
-            .remove(&IrcChannel::normalize_name(channel));
+    pub fn left(&self, channel: &IrcChannelName) {
+        self.connection.lock().unwrap().joined.remove(channel);
     }
 }
 
 #[async_trait]
 impl MessageSender for IrcMessageSender {
     async fn send(&self, delivery: &Delivery) -> anyhow::Result<()> {
-        let Channel::Irc(destination) = &delivery.destination else {
-            bail!("{} is not an irc channel", delivery.destination);
+        let Channel::Irc(destination) = delivery.destination() else {
+            bail!("{} is not an irc channel", delivery.destination());
         };
         let channel = destination.name();
         let connection = self.connection.lock().unwrap();
@@ -66,14 +58,18 @@ impl MessageSender for IrcMessageSender {
             bail!("not joined to {channel}");
         }
 
-        let message = &delivery.message;
+        let message = delivery.message();
         let overhead = message.relay_line("").len();
         let budget = MAX_LINE_BYTES
-            .saturating_sub(channel.len() + overhead)
+            .saturating_sub(channel.as_str().len() + overhead)
             .max(64);
-        for line in message.body.lines().filter(|line| !line.trim().is_empty()) {
+        for line in message
+            .body()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+        {
             for chunk in split_at_byte_limit(line, budget) {
-                sender.send_privmsg(channel, message.relay_line(chunk))?;
+                sender.send_privmsg(channel.as_str(), message.relay_line(chunk))?;
             }
         }
         Ok(())

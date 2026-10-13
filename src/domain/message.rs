@@ -5,17 +5,25 @@ use uuid::Uuid;
 use crate::domain::channel::Channel;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MessageId(pub Uuid);
+pub struct MessageId {
+    uuid: Uuid,
+}
 
 impl MessageId {
+    pub fn new(uuid: Uuid) -> Self {
+        Self { uuid }
+    }
+
     pub fn generate() -> Self {
-        Self(Uuid::new_v4())
+        Self {
+            uuid: Uuid::new_v4(),
+        }
     }
 }
 
 impl fmt::Display for MessageId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
+        self.uuid.fmt(f)
     }
 }
 
@@ -27,14 +35,50 @@ pub enum MessageKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Message {
-    pub source: Channel,
-    pub external_id: Option<String>,
-    pub sender: String,
-    pub kind: MessageKind,
-    pub body: String,
+    source: Channel,
+    external_id: Option<String>,
+    sender: String,
+    kind: MessageKind,
+    body: String,
 }
 
 impl Message {
+    pub fn new(
+        source: Channel,
+        external_id: Option<String>,
+        sender: String,
+        kind: MessageKind,
+        body: String,
+    ) -> Self {
+        Self {
+            source,
+            external_id,
+            sender,
+            kind,
+            body,
+        }
+    }
+
+    pub fn source(&self) -> &Channel {
+        &self.source
+    }
+
+    pub fn external_id(&self) -> Option<&str> {
+        self.external_id.as_deref()
+    }
+
+    pub fn sender(&self) -> &str {
+        &self.sender
+    }
+
+    pub fn kind(&self) -> MessageKind {
+        self.kind
+    }
+
+    pub fn body(&self) -> &str {
+        &self.body
+    }
+
     pub fn relay_line(&self, text: &str) -> String {
         match self.kind {
             MessageKind::Normal => format!("<{}> {}", self.sender, text),
@@ -50,16 +94,19 @@ impl Message {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::channel::IrcChannel;
+    use crate::domain::channel::{IrcChannel, IrcChannelName, IrcNetworkName};
 
     fn message(kind: MessageKind) -> Message {
-        Message {
-            source: Channel::Irc(IrcChannel::new("libera", "#rust")),
-            external_id: None,
-            sender: "alice".into(),
+        Message::new(
+            Channel::Irc(IrcChannel::new(
+                IrcNetworkName::new("libera"),
+                IrcChannelName::new("#channel").unwrap(),
+            )),
+            None,
+            "alice".into(),
             kind,
-            body: "hello".into(),
-        }
+            "hello".into(),
+        )
     }
 
     #[test]

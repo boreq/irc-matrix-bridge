@@ -131,10 +131,10 @@ impl MatrixMessageSender {
 #[async_trait]
 impl MessageSender for MatrixMessageSender {
     async fn send(&self, delivery: &Delivery) -> anyhow::Result<()> {
-        let Channel::Matrix(room) = &delivery.destination else {
-            bail!("{} is not a matrix room", delivery.destination);
+        let Channel::Matrix(room) = delivery.destination() else {
+            bail!("{} is not a matrix room", delivery.destination());
         };
-        let room_id = RoomId::parse(&room.id)?;
+        let room_id = RoomId::parse(room.id())?;
         let Some(room) = self.client.get_room(&room_id) else {
             bail!("unknown room {room_id}");
         };
@@ -142,9 +142,9 @@ impl MessageSender for MatrixMessageSender {
             bail!("not joined to {room_id}");
         }
 
-        let txn_id = OwnedTransactionId::from(format!("irc-bridge-{}", delivery.id));
+        let txn_id = OwnedTransactionId::from(format!("irc-bridge-{}", delivery.id()));
         room.send(RoomMessageEventContent::text_plain(
-            delivery.message.relay_text(),
+            delivery.message().relay_text(),
         ))
         .with_transaction_id(txn_id)
         .await?;

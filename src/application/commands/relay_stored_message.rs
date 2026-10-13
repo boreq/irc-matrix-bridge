@@ -61,9 +61,9 @@ impl RelayStoredMessageHandler {
             return Ok(RelayStoredMessageOutcome::NothingPending);
         };
         let now = self.clock.now();
-        if delivery.next_attempt_at > now {
+        if delivery.next_attempt_at() > now {
             return Ok(RelayStoredMessageOutcome::NotDue {
-                at: delivery.next_attempt_at,
+                at: delivery.next_attempt_at(),
             });
         }
 
@@ -72,26 +72,26 @@ impl RelayStoredMessageHandler {
             .unwrap_or_else(|_| Err(anyhow!("timed out")));
         let error = match sent {
             Ok(()) => {
-                self.repository.mark_delivered(delivery.id, now).await?;
+                self.repository.mark_delivered(delivery.id(), now).await?;
                 return Ok(RelayStoredMessageOutcome::Delivered);
             }
             Err(error) => format!("{error:#}"),
         };
 
-        let attempts = delivery.attempts + 1;
+        let attempts = delivery.attempts() + 1;
         match self.retry.delay_after(attempts) {
             Some(delay) => {
                 tracing::warn!(%destination, attempts, %error, "delivery failed, will retry");
                 let at = now + delay;
                 self.repository
-                    .schedule_retry(delivery.id, attempts, at, &error)
+                    .schedule_retry(delivery.id(), attempts, at, &error)
                     .await?;
                 Ok(RelayStoredMessageOutcome::RetryScheduled { at })
             }
             None => {
                 tracing::error!(%destination, attempts, %error, "delivery failed, giving up");
                 self.repository
-                    .mark_failed(delivery.id, attempts, &error)
+                    .mark_failed(delivery.id(), attempts, &error)
                     .await?;
                 Ok(RelayStoredMessageOutcome::GaveUp)
             }
@@ -107,7 +107,7 @@ mod tests {
 
     use super::*;
     use crate::application::ports::StoreOutcome;
-    use crate::domain::channel::{IrcChannel, MatrixRoom};
+    use crate::domain::channel::{IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
     use crate::domain::delivery::Delivery;
     use crate::domain::message::{Message, MessageId, MessageKind};
     use uuid::Uuid;
@@ -141,12 +141,12 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|d| &d.destination == destination)
+                .find(|d| d.destination() == destination)
                 .cloned())
         }
 
         async fn mark_delivered(&self, id: MessageId, _: DateTime) -> anyhow::Result<()> {
-            self.pending.lock().unwrap().retain(|d| d.id != id);
+            self.pending.lock().unwrap().retain(|d| d.id() != id);
             self.delivered.lock().unwrap().push(id);
             Ok(())
         }
@@ -159,16 +159,21 @@ mod tests {
             _: &str,
         ) -> anyhow::Result<()> {
             for d in self.pending.lock().unwrap().iter_mut() {
-                if d.id == id {
-                    d.attempts = attempts;
-                    d.next_attempt_at = next_attempt_at;
+                if d.id() == id {
+                    *d = Delivery::new(
+                        id,
+                        d.message().clone(),
+                        d.destination().clone(),
+                        attempts,
+                        next_attempt_at,
+                    );
                 }
             }
             Ok(())
         }
 
         async fn mark_failed(&self, id: MessageId, _: u32, _: &str) -> anyhow::Result<()> {
-            self.pending.lock().unwrap().retain(|d| d.id != id);
+            self.pending.lock().unwrap().retain(|d| d.id() != id);
             self.failed.lock().unwrap().push(id);
             Ok(())
         }
@@ -186,41 +191,46 @@ mod tests {
             if self.broken {
                 anyhow::bail!("broken");
             }
-            self.sent.lock().unwrap().push(delivery.id);
+            self.sent.lock().unwrap().push(delivery.id());
             Ok(())
         }
     }
 
-    struct FixedClock(DateTime);
+    struct FixedClock {
+        now: DateTime,
+    }
 
     impl Clock for FixedClock {
         fn now(&self) -> DateTime {
-            self.0
+            self.now
         }
     }
 
     fn destination() -> Channel {
-        Channel::Irc(IrcChannel::new("test", "#chan"))
+        Channel::Irc(IrcChannel::new(
+            IrcNetworkName::new("test"),
+            IrcChannelName::new("#chan").unwrap(),
+        ))
     }
 
     fn id(n: u128) -> MessageId {
-        MessageId(Uuid::from_u128(n))
+        MessageId::new(Uuid::from_u128(n))
     }
 
-    fn delivery(n: u128) -> Delivery {
-        Delivery {
-            id: id(n),
-            message: Message {
-                source: Channel::Matrix(MatrixRoom::new("!room")),
-                external_id: None,
-                sender: "alice".into(),
-                kind: MessageKind::Normal,
-                body: format!("message {n}"),
-            },
-            destination: destination(),
-            attempts: 0,
-            next_attempt_at: DateTime::from_unix_millis(0).unwrap(),
-        }
+    fn delivery(n: u128, attempts: u32) -> Delivery {
+        Delivery::new(
+            id(n),
+            Message::new(
+                Channel::Matrix(MatrixRoom::new("!room")),
+                None,
+                "alice".into(),
+                MessageKind::Normal,
+                format!("message {n}"),
+            ),
+            destination(),
+            attempts,
+            DateTime::from_unix_millis(0).unwrap(),
+        )
     }
 
     fn handler(
@@ -231,7 +241,9 @@ mod tests {
         RelayStoredMessageHandler::new(
             repository,
             HashMap::from([(destination().network(), sender as Arc<dyn MessageSender>)]),
-            Arc::new(FixedClock(DateTime::from_unix_millis(1_000).unwrap())),
+            Arc::new(FixedClock {
+                now: DateTime::from_unix_millis(1_000).unwrap(),
+            }),
             retry,
         )
     }
@@ -245,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn relays_stored_messages_oldest_first() {
         let repository = Arc::new(FakeRepository::default());
-        *repository.pending.lock().unwrap() = vec![delivery(1), delivery(2)];
+        *repository.pending.lock().unwrap() = vec![delivery(1, 0), delivery(2, 0)];
         let sender = Arc::new(FakeSender::default());
         let handler = handler(repository.clone(), sender.clone(), RetryPolicy::default());
 
@@ -266,7 +278,7 @@ mod tests {
     #[tokio::test]
     async fn failed_message_holds_back_later_ones_until_retry_is_due() {
         let repository = Arc::new(FakeRepository::default());
-        *repository.pending.lock().unwrap() = vec![delivery(1), delivery(2)];
+        *repository.pending.lock().unwrap() = vec![delivery(1, 0), delivery(2, 0)];
         let sender = Arc::new(FakeSender {
             broken: true,
             ..FakeSender::default()
@@ -287,9 +299,10 @@ mod tests {
         );
 
         let pending = repository.pending.lock().unwrap();
-        assert_eq!(pending[0].attempts, 1);
+        assert_eq!(pending[0].attempts(), 1);
         assert_eq!(
-            pending[1].attempts, 0,
+            pending[1].attempts(),
+            0,
             "later message must not jump the queue"
         );
     }
@@ -297,17 +310,12 @@ mod tests {
     #[tokio::test]
     async fn gives_up_after_max_attempts() {
         let repository = Arc::new(FakeRepository::default());
-        let mut exhausted = delivery(1);
-        exhausted.attempts = 2;
-        *repository.pending.lock().unwrap() = vec![exhausted];
+        *repository.pending.lock().unwrap() = vec![delivery(1, 2)];
         let sender = Arc::new(FakeSender {
             broken: true,
             ..FakeSender::default()
         });
-        let retry = RetryPolicy {
-            max_attempts: 3,
-            ..RetryPolicy::default()
-        };
+        let retry = RetryPolicy::new(3, Duration::from_secs(1), Duration::from_secs(600));
         let handler = handler(repository.clone(), sender, retry);
 
         assert_eq!(

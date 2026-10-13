@@ -6,18 +6,56 @@ use crate::domain::time::DateTime;
 
 #[derive(Clone, Debug)]
 pub struct Delivery {
-    pub id: MessageId,
-    pub message: Message,
-    pub destination: Channel,
-    pub attempts: u32,
-    pub next_attempt_at: DateTime,
+    id: MessageId,
+    message: Message,
+    destination: Channel,
+    attempts: u32,
+    next_attempt_at: DateTime,
+}
+
+impl Delivery {
+    pub fn new(
+        id: MessageId,
+        message: Message,
+        destination: Channel,
+        attempts: u32,
+        next_attempt_at: DateTime,
+    ) -> Self {
+        Self {
+            id,
+            message,
+            destination,
+            attempts,
+            next_attempt_at,
+        }
+    }
+
+    pub fn id(&self) -> MessageId {
+        self.id
+    }
+
+    pub fn message(&self) -> &Message {
+        &self.message
+    }
+
+    pub fn destination(&self) -> &Channel {
+        &self.destination
+    }
+
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+
+    pub fn next_attempt_at(&self) -> DateTime {
+        self.next_attempt_at
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct RetryPolicy {
-    pub max_attempts: u32,
-    pub base_delay: Duration,
-    pub max_delay: Duration,
+    max_attempts: u32,
+    base_delay: Duration,
+    max_delay: Duration,
 }
 
 impl Default for RetryPolicy {
@@ -31,6 +69,14 @@ impl Default for RetryPolicy {
 }
 
 impl RetryPolicy {
+    pub fn new(max_attempts: u32, base_delay: Duration, max_delay: Duration) -> Self {
+        Self {
+            max_attempts,
+            base_delay,
+            max_delay,
+        }
+    }
+
     pub fn delay_after(&self, failed_attempts: u32) -> Option<Duration> {
         if failed_attempts >= self.max_attempts {
             return None;
@@ -46,11 +92,7 @@ mod tests {
 
     #[test]
     fn backs_off_exponentially_and_gives_up() {
-        let policy = RetryPolicy {
-            max_attempts: 5,
-            base_delay: Duration::from_millis(100),
-            max_delay: Duration::from_millis(500),
-        };
+        let policy = RetryPolicy::new(5, Duration::from_millis(100), Duration::from_millis(500));
         assert_eq!(policy.delay_after(1), Some(Duration::from_millis(100)));
         assert_eq!(policy.delay_after(2), Some(Duration::from_millis(200)));
         assert_eq!(policy.delay_after(3), Some(Duration::from_millis(400)));

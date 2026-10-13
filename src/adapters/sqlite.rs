@@ -7,7 +7,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::application::ports::{MessageRepository, StoreOutcome};
-use crate::domain::channel::{Channel, IrcChannel, MatrixRoom, Network};
+use crate::domain::channel::{
+    Channel, IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom, Network,
+};
 use crate::domain::delivery::Delivery;
 use crate::domain::message::{Message, MessageId, MessageKind};
 use crate::domain::time::DateTime;
@@ -79,6 +81,36 @@ impl SqliteMessageRepository {
         })
         .await?
     }
+
+    #[cfg(test)]
+    fn delivery_status(&self, id: MessageId) -> Option<String> {
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM messages WHERE id = ?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    #[cfg(test)]
+    fn pending_count(&self, destination: &Channel) -> usize {
+        let (network, channel) = channel_columns(destination);
+        self.conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM messages
+                 WHERE destination_network = ?1 AND destination_channel = ?2
+                   AND status = 'pending'",
+                params![network, channel],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
 }
 
 #[async_trait]
@@ -91,7 +123,7 @@ impl MessageRepository for SqliteMessageRepository {
         now: DateTime,
     ) -> anyhow::Result<StoreOutcome> {
         let message = message.clone();
-        let (source_network, source_channel) = channel_columns(&message.source);
+        let (source_network, source_channel) = channel_columns(message.source());
         let (destination_network, destination_channel) = channel_columns(destination);
         self.with_conn(move |conn| {
             let inserted = conn.execute(
@@ -105,10 +137,10 @@ impl MessageRepository for SqliteMessageRepository {
                     id.to_string(),
                     source_network,
                     source_channel,
-                    message.external_id,
-                    message.sender,
-                    kind_column(message.kind),
-                    message.body,
+                    message.external_id(),
+                    message.sender(),
+                    kind_column(message.kind()),
+                    message.body(),
                     now.unix_millis(),
                     destination_network,
                     destination_channel,
@@ -185,20 +217,20 @@ impl MessageRepository for SqliteMessageRepository {
             else {
                 return Ok(None);
             };
-            Ok(Some(Delivery {
-                id: id_from_column(&id)?,
-                message: Message {
-                    source: channel_from_columns(&source_network, source_channel)?,
+            Ok(Some(Delivery::new(
+                id_from_column(&id)?,
+                Message::new(
+                    channel_from_columns(&source_network, source_channel)?,
                     external_id,
                     sender,
-                    kind: kind_from_column(&kind)?,
+                    kind_from_column(&kind)?,
                     body,
-                },
+                ),
                 destination,
                 attempts,
-                next_attempt_at: DateTime::from_unix_millis(next_attempt_at)
+                DateTime::from_unix_millis(next_attempt_at)
                     .with_context(|| format!("invalid timestamp {next_attempt_at}"))?,
-            }))
+            )))
         })
         .await
     }
@@ -254,7 +286,7 @@ impl MessageRepository for SqliteMessageRepository {
 
 fn id_from_column(id: &str) -> anyhow::Result<MessageId> {
     let uuid = Uuid::parse_str(id).with_context(|| format!("invalid message id `{id}`"))?;
-    Ok(MessageId(uuid))
+    Ok(MessageId::new(uuid))
 }
 
 fn kind_column(kind: MessageKind) -> &'static str {
@@ -281,8 +313,8 @@ fn network_column(network: &Network) -> String {
 
 fn channel_columns(channel: &Channel) -> (String, String) {
     let name = match channel {
-        Channel::Matrix(room) => room.id.as_str(),
-        Channel::Irc(channel) => channel.name(),
+        Channel::Matrix(room) => room.id(),
+        Channel::Irc(channel) => channel.name().as_str(),
     };
     (network_column(&channel.network()), name.to_owned())
 }
@@ -294,38 +326,10 @@ fn channel_from_columns(network: &str, name: String) -> anyhow::Result<Channel> 
     let irc_network = network
         .strip_prefix("irc:")
         .with_context(|| format!("unknown network `{network}`"))?;
-    Ok(Channel::Irc(IrcChannel::new(irc_network, &name)))
-}
-
-#[cfg(test)]
-impl SqliteMessageRepository {
-    fn delivery_status(&self, id: MessageId) -> Option<String> {
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT status FROM messages WHERE id = ?1",
-                [id.to_string()],
-                |row| row.get(0),
-            )
-            .optional()
-            .unwrap()
-    }
-
-    fn pending_count(&self, destination: &Channel) -> usize {
-        let (network, channel) = channel_columns(destination);
-        self.conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM messages
-                 WHERE destination_network = ?1 AND destination_channel = ?2
-                   AND status = 'pending'",
-                params![network, channel],
-                |row| row.get(0),
-            )
-            .unwrap()
-    }
+    Ok(Channel::Irc(IrcChannel::new(
+        IrcNetworkName::new(irc_network),
+        IrcChannelName::new(&name)?,
+    )))
 }
 
 #[cfg(test)]
@@ -333,17 +337,20 @@ mod tests {
     use super::*;
 
     fn message(external_id: Option<&str>) -> Message {
-        Message {
-            source: Channel::Matrix(MatrixRoom::new("!room:example.org")),
-            external_id: external_id.map(Into::into),
-            sender: "alice".into(),
-            kind: MessageKind::Action,
-            body: "waves".into(),
-        }
+        Message::new(
+            Channel::Matrix(MatrixRoom::new("!room:example.org")),
+            external_id.map(Into::into),
+            "alice".into(),
+            MessageKind::Action,
+            "waves".into(),
+        )
     }
 
     fn irc(channel: &str) -> Channel {
-        Channel::Irc(IrcChannel::new("libera", channel))
+        Channel::Irc(IrcChannel::new(
+            IrcNetworkName::new("libera"),
+            IrcChannelName::new(channel).unwrap(),
+        ))
     }
 
     fn at(unix_millis: i64) -> DateTime {
@@ -361,17 +368,17 @@ mod tests {
         assert_eq!(outcome, StoreOutcome::Stored);
 
         let channels = repo
-            .pending_channels(&Network::Irc("libera".into()))
+            .pending_channels(&Network::Irc(IrcNetworkName::new("libera")))
             .await
             .unwrap();
         assert_eq!(channels, vec![irc("#a")]);
 
         assert_eq!(repo.pending_count(&irc("#a")), 1);
         let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
-        assert_eq!(next.id, id);
-        assert_eq!(next.message, message(Some("$event")));
-        assert_eq!(next.destination, irc("#a"));
-        assert_eq!(next.next_attempt_at, at(10));
+        assert_eq!(next.id(), id);
+        assert_eq!(next.message(), &message(Some("$event")));
+        assert_eq!(next.destination(), &irc("#a"));
+        assert_eq!(next.next_attempt_at(), at(10));
     }
 
     #[tokio::test]
@@ -402,8 +409,8 @@ mod tests {
     async fn next_delivery_is_oldest_pending_and_status_transitions_advance_it() {
         let repo = SqliteMessageRepository::in_memory().unwrap();
         // The ids sort opposite to insertion order, so ordering must not rely on them.
-        let first = MessageId(Uuid::from_u128(2));
-        let second = MessageId(Uuid::from_u128(1));
+        let first = MessageId::new(Uuid::from_u128(2));
+        let second = MessageId::new(Uuid::from_u128(1));
         for id in [first, second] {
             repo.store(id, &message(None), &irc("#a"), at(0))
                 .await
@@ -411,20 +418,20 @@ mod tests {
         }
 
         let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
-        assert_eq!(next.id, first);
+        assert_eq!(next.id(), first);
 
         repo.schedule_retry(first, 1, at(500), "boom")
             .await
             .unwrap();
         let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
         assert_eq!(
-            (next.id, next.attempts, next.next_attempt_at),
+            (next.id(), next.attempts(), next.next_attempt_at()),
             (first, 1, at(500))
         );
 
         repo.mark_delivered(first, at(600)).await.unwrap();
         let next = repo.next_delivery(&irc("#a")).await.unwrap().unwrap();
-        assert_eq!(next.id, second);
+        assert_eq!(next.id(), second);
 
         repo.mark_failed(second, 30, "gone").await.unwrap();
         assert!(repo.next_delivery(&irc("#a")).await.unwrap().is_none());

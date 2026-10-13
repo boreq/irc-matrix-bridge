@@ -133,13 +133,13 @@ async fn on_room_message(
         _ => event.sender.localpart().to_owned(),
     };
 
-    let message = Message {
-        source: Channel::Matrix(MatrixRoom::new(room.room_id().as_str())),
-        external_id: Some(event.event_id.to_string()),
+    let message = Message::new(
+        Channel::Matrix(MatrixRoom::new(room.room_id().as_str())),
+        Some(event.event_id.to_string()),
         sender,
         kind,
         body,
-    };
+    );
     if let Err(error) = handler.handle(StoreReceivedMessage { message }).await {
         tracing::error!(room_id = %room.room_id(), "storing message failed: {error:#}");
     }

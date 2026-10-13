@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use crate::adapters::matrix::MatrixSettings;
 use crate::domain::bridges::{Bridge, Bridges};
-use crate::domain::channel::{IrcChannel, MatrixRoom};
+use crate::domain::channel::{IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
 use crate::entrypoints::irc::IrcSettings;
 
 #[derive(Debug, Deserialize)]
@@ -19,21 +19,6 @@ pub struct Config {
     pub irc: BTreeMap<String, IrcSettings>,
     #[serde(default, rename = "bridge")]
     pub bridges: Vec<BridgeConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BridgeConfig {
-    pub name: String,
-    pub matrix: OwnedRoomId,
-    pub irc: IrcChannelConfig,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IrcChannelConfig {
-    pub network: String,
-    pub channel: String,
 }
 
 impl Config {
@@ -52,12 +37,31 @@ impl Config {
                 bridge.name,
                 bridge.irc.network
             );
-            bridges.push(Bridge {
-                name: bridge.name.clone(),
-                matrix: MatrixRoom::new(bridge.matrix.as_str()),
-                irc: IrcChannel::new(&bridge.irc.network, &bridge.irc.channel),
-            });
+            bridges.push(Bridge::new(
+                bridge.name.clone(),
+                MatrixRoom::new(bridge.matrix.as_str()),
+                IrcChannel::new(
+                    IrcNetworkName::new(&bridge.irc.network),
+                    IrcChannelName::new(&bridge.irc.channel)
+                        .with_context(|| format!("bridge `{}`", bridge.name))?,
+                ),
+            ));
         }
         Ok(Bridges::new(bridges)?)
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BridgeConfig {
+    pub name: String,
+    pub matrix: OwnedRoomId,
+    pub irc: IrcChannelConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrcChannelConfig {
+    pub network: String,
+    pub channel: String,
 }

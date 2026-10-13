@@ -1,0 +1,10 @@
+- Hexagonal architecture:
+  - `domain`: business logic
+  - `application`: usecases (commands, queries) and ports
+  - `adapters`: implementations of ports
+  - `entrypoints`: driving side, calls application
+- Domain structs have private fields, a constructor and getters.
+- Name every field in structs.
+- Keep `impl` blocks directly below their type.
+- Errors: crate-wide `Error` and `Result` in `errors.rs` (thiserror). Ad-hoc errors go in `Error::Unknown(anyhow!(...))`, no per-module error types.
+- Prefer domain types over raw strings, e.g. `IrcNetworkName` and `IrcChannelName` instead of `String`.

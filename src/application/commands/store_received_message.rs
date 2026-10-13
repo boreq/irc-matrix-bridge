@@ -42,7 +42,7 @@ impl StoreReceivedMessageHandler {
         command: StoreReceivedMessage,
     ) -> anyhow::Result<StoreReceivedMessageOutcome> {
         let message = command.message;
-        let Some(destination) = self.bridges.destination(&message.source) else {
+        let Some(destination) = self.bridges.destination(message.source()) else {
             return Ok(StoreReceivedMessageOutcome::NotBridged);
         };
 

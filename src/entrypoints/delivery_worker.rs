@@ -89,7 +89,7 @@ mod tests {
     use super::*;
     use crate::adapters::sqlite::SqliteMessageRepository;
     use crate::application::ports::{MessageRepository, MessageSender};
-    use crate::domain::channel::{Channel, IrcChannel, MatrixRoom};
+    use crate::domain::channel::{Channel, IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
     use crate::domain::delivery::{Delivery, RetryPolicy};
     use crate::domain::message::{Message, MessageId, MessageKind};
 
@@ -101,36 +101,47 @@ mod tests {
     #[async_trait]
     impl MessageSender for FakeSender {
         async fn send(&self, delivery: &Delivery) -> anyhow::Result<()> {
-            if delivery.destination == self.broken {
+            if delivery.destination() == &self.broken {
                 anyhow::bail!("broken");
             }
-            self.sent.lock().unwrap().push(delivery.destination.clone());
+            self.sent
+                .lock()
+                .unwrap()
+                .push(delivery.destination().clone());
             Ok(())
         }
     }
 
-    struct FixedClock(DateTime);
+    struct FixedClock {
+        now: DateTime,
+    }
 
     impl Clock for FixedClock {
         fn now(&self) -> DateTime {
-            self.0
+            self.now
         }
     }
 
     #[tokio::test]
     async fn failure_on_one_destination_does_not_block_others() {
-        let network = Network::Irc("test".into());
-        let broken = Channel::Irc(IrcChannel::new("test", "#broken"));
-        let ok = Channel::Irc(IrcChannel::new("test", "#ok"));
+        let network = Network::Irc(IrcNetworkName::new("test"));
+        let irc = |name| {
+            Channel::Irc(IrcChannel::new(
+                IrcNetworkName::new("test"),
+                IrcChannelName::new(name).unwrap(),
+            ))
+        };
+        let broken = irc("#broken");
+        let ok = irc("#ok");
         let repository = Arc::new(SqliteMessageRepository::in_memory().unwrap());
         for _ in 0..2 {
-            let message = Message {
-                source: Channel::Matrix(MatrixRoom::new("!room")),
-                external_id: None,
-                sender: "alice".into(),
-                kind: MessageKind::Normal,
-                body: "hello".into(),
-            };
+            let message = Message::new(
+                Channel::Matrix(MatrixRoom::new("!room")),
+                None,
+                "alice".into(),
+                MessageKind::Normal,
+                "hello".into(),
+            );
             for destination in [&broken, &ok] {
                 repository
                     .store(
@@ -151,7 +162,9 @@ mod tests {
         let relay_stored_message = RelayStoredMessageHandler::new(
             repository,
             HashMap::from([(network.clone(), sender.clone() as Arc<dyn MessageSender>)]),
-            Arc::new(FixedClock(DateTime::from_unix_millis(1_000).unwrap())),
+            Arc::new(FixedClock {
+                now: DateTime::from_unix_millis(1_000).unwrap(),
+            }),
             RetryPolicy::default(),
         );
 

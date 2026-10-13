@@ -1,22 +1,19 @@
 use std::collections::HashMap;
 
-use crate::domain::channel::{Channel, IrcChannel, MatrixRoom};
+use crate::domain::channel::{Channel, IrcChannel, IrcNetworkName, MatrixRoom};
+use crate::errors::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct Bridge {
-    pub name: String,
-    pub matrix: MatrixRoom,
-    pub irc: IrcChannel,
+    name: String,
+    matrix: MatrixRoom,
+    irc: IrcChannel,
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum BridgesError {
-    #[error("{channel} is used by both bridge `{first}` and bridge `{second}`")]
-    ChannelInTwoBridges {
-        channel: Channel,
-        first: String,
-        second: String,
-    },
+impl Bridge {
+    pub fn new(name: String, matrix: MatrixRoom, irc: IrcChannel) -> Self {
+        Self { name, matrix, irc }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -25,7 +22,7 @@ pub struct Bridges {
 }
 
 impl Bridges {
-    pub fn new(bridges: Vec<Bridge>) -> Result<Self, BridgesError> {
+    pub fn new(bridges: Vec<Bridge>) -> Result<Self> {
         let mut owners: HashMap<Channel, &str> = HashMap::new();
         for bridge in &bridges {
             let channels = [
@@ -34,7 +31,7 @@ impl Bridges {
             ];
             for channel in channels {
                 if let Some(first) = owners.insert(channel.clone(), &bridge.name) {
-                    return Err(BridgesError::ChannelInTwoBridges {
+                    return Err(Error::ChannelInTwoBridges {
                         channel,
                         first: first.to_owned(),
                         second: bridge.name.clone(),
@@ -64,7 +61,7 @@ impl Bridges {
         self.bridges.iter().map(|bridge| &bridge.matrix)
     }
 
-    pub fn irc_channels(&self, network: &str) -> impl Iterator<Item = &IrcChannel> {
+    pub fn irc_channels(&self, network: &IrcNetworkName) -> impl Iterator<Item = &IrcChannel> {
         self.bridges
             .iter()
             .map(|bridge| &bridge.irc)
@@ -75,21 +72,25 @@ impl Bridges {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::channel::IrcChannelName;
 
     fn matrix(room: &str) -> Channel {
         Channel::Matrix(MatrixRoom::new(room))
     }
 
+    fn irc_channel(name: &str) -> IrcChannel {
+        IrcChannel::new(
+            IrcNetworkName::new("libera"),
+            IrcChannelName::new(name).unwrap(),
+        )
+    }
+
     fn irc(channel: &str) -> Channel {
-        Channel::Irc(IrcChannel::new("libera", channel))
+        Channel::Irc(irc_channel(channel))
     }
 
     fn bridge(name: &str, room: &str, channel: &str) -> Bridge {
-        Bridge {
-            name: name.into(),
-            matrix: MatrixRoom::new(room),
-            irc: IrcChannel::new("libera", channel),
-        }
+        Bridge::new(name.into(), MatrixRoom::new(room), irc_channel(channel))
     }
 
     #[test]
@@ -107,9 +108,6 @@ mod tests {
             bridge("a", "!a", "#shared"),
             bridge("b", "!b", "#shared"),
         ]);
-        assert!(matches!(
-            result,
-            Err(BridgesError::ChannelInTwoBridges { .. })
-        ));
+        assert!(matches!(result, Err(Error::ChannelInTwoBridges { .. })));
     }
 }

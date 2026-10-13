@@ -12,7 +12,7 @@ use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler, StoreReceivedMessageOutcome,
 };
 use crate::application::ports::DeliveryWaker;
-use crate::domain::channel::{Channel, IrcChannel, Network};
+use crate::domain::channel::{Channel, IrcChannel, IrcChannelName, IrcNetworkName, Network};
 use crate::domain::message::{Message, MessageKind};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -36,9 +36,9 @@ fn default_tls() -> bool {
 }
 
 pub struct IrcEntrypoint {
-    pub network: String,
+    pub network: IrcNetworkName,
     pub settings: IrcSettings,
-    pub channels: Vec<String>,
+    pub channels: Vec<IrcChannelName>,
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
     pub sender: Arc<IrcMessageSender>,
     pub waker: Arc<dyn DeliveryWaker>,
@@ -91,7 +91,11 @@ impl IrcEntrypoint {
             use_tls: Some(s.tls),
             password: s.password.clone(),
             nick_password: s.nick_password.clone(),
-            channels: self.channels.clone(),
+            channels: self
+                .channels
+                .iter()
+                .map(|channel| channel.as_str().to_owned())
+                .collect(),
             ..IrcClientConfig::default()
         }
     }
@@ -103,43 +107,45 @@ impl IrcEntrypoint {
 
         match &message.command {
             Command::JOIN(channels, _, _) if from_me => {
-                for channel in channels.split(',') {
+                for channel in channel_names(channels) {
                     tracing::info!(network = %self.network, %channel, "joined");
                     self.sender.joined(channel);
                 }
                 self.waker.wake(&Network::Irc(self.network.clone()));
             }
             Command::PART(channels, _) if from_me => {
-                channels
-                    .split(',')
-                    .for_each(|channel| self.sender.left(channel));
+                channel_names(channels).for_each(|channel| self.sender.left(&channel));
             }
             Command::KICK(channel, nick, reason) if nick.eq_ignore_ascii_case(me) => {
                 tracing::warn!(network = %self.network, %channel, ?reason, "kicked, rejoining");
-                self.sender.left(channel);
+                channel_names(channel).for_each(|name| self.sender.left(&name));
                 if let Err(error) = client.send_join(channel) {
                     tracing::warn!("rejoin failed: {error}");
                 }
             }
             Command::PRIVMSG(target, text) if !from_me => {
                 let Some(nick) = from else { return };
+                // Private messages to the bridge target its nick, not a channel.
+                let Ok(channel) = IrcChannelName::new(target) else {
+                    return;
+                };
                 let Some((kind, body)) = parse_privmsg(text) else {
                     return;
                 };
-                self.store(target, nick, kind, body).await;
+                self.store(channel, nick, kind, body).await;
             }
             _ => {}
         }
     }
 
-    async fn store(&self, channel: &str, nick: &str, kind: MessageKind, body: String) {
-        let message = Message {
-            source: Channel::Irc(IrcChannel::new(&self.network, channel)),
-            external_id: None,
-            sender: nick.to_owned(),
+    async fn store(&self, channel: IrcChannelName, nick: &str, kind: MessageKind, body: String) {
+        let message = Message::new(
+            Channel::Irc(IrcChannel::new(self.network.clone(), channel.clone())),
+            None,
+            nick.to_owned(),
             kind,
             body,
-        };
+        );
         match self
             .store_received_message
             .handle(StoreReceivedMessage { message })
@@ -155,6 +161,12 @@ impl IrcEntrypoint {
             }
         }
     }
+}
+
+fn channel_names(channels: &str) -> impl Iterator<Item = IrcChannelName> {
+    channels
+        .split(',')
+        .filter_map(|channel| IrcChannelName::new(channel).ok())
 }
 
 fn parse_privmsg(text: &str) -> Option<(MessageKind, String)> {
