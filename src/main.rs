@@ -8,6 +8,7 @@ use tokio::task::JoinSet;
 use tracing_subscriber::EnvFilter;
 
 use irc_bridge::adapters::clock::SystemClock;
+use irc_bridge::adapters::config::TomlConfigLoader;
 use irc_bridge::adapters::irc::IrcMessageSender;
 use irc_bridge::adapters::matrix::MatrixMessageSender;
 use irc_bridge::adapters::sqlite::SqliteMessageRepository;
@@ -16,8 +17,7 @@ use irc_bridge::application::commands::relay_stored_message::RelayStoredMessageH
 use irc_bridge::application::commands::store_received_message::StoreReceivedMessageHandler;
 use irc_bridge::application::ports::{Clock, DeliveryWaker, MessageRepository, MessageSender};
 use irc_bridge::application::queries::pending_destinations::PendingDestinationsHandler;
-use irc_bridge::config::Config;
-use irc_bridge::domain::channel::{IrcNetworkName, Network};
+use irc_bridge::domain::channel::Network;
 use irc_bridge::domain::delivery::RetryPolicy;
 use irc_bridge::entrypoints::delivery_worker;
 use irc_bridge::entrypoints::irc::IrcEntrypoint;
@@ -34,19 +34,19 @@ async fn main() -> anyhow::Result<()> {
     let config_path = std::env::args()
         .nth(1)
         .map_or_else(|| PathBuf::from("config.toml"), PathBuf::from);
-    let config = Config::load(&config_path)?;
-    let bridges = Arc::new(config.to_bridges()?);
+    let config = TomlConfigLoader::new(config_path).load()?;
+    let bridges = Arc::new(config.bridges().clone());
 
     let repository: Arc<dyn MessageRepository> =
-        Arc::new(SqliteMessageRepository::open(&config.database)?);
+        Arc::new(SqliteMessageRepository::open(config.database())?);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
 
     let mut networks = vec![Network::Matrix];
     networks.extend(
         config
-            .irc
-            .keys()
-            .map(|name| Network::Irc(IrcNetworkName::new(name))),
+            .irc_networks()
+            .iter()
+            .map(|irc| Network::Irc(irc.name().clone())),
     );
     let notify_waker = Arc::new(NotifyWaker::new(&networks));
     let waker: Arc<dyn DeliveryWaker> = notify_waker.clone();
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         clock.clone(),
     ));
 
-    let matrix = irc_bridge::adapters::matrix::connect(&config.matrix).await?;
+    let matrix = irc_bridge::adapters::matrix::connect(config.matrix()).await?;
     let mut senders: HashMap<Network, Arc<dyn MessageSender>> = HashMap::new();
     senders.insert(
         Network::Matrix,
@@ -66,18 +66,16 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let mut tasks = JoinSet::new();
-    for (name, settings) in &config.irc {
-        let network = IrcNetworkName::new(name);
+    for irc in config.irc_networks() {
         let sender = Arc::new(IrcMessageSender::default());
-        senders.insert(Network::Irc(network.clone()), sender.clone());
+        senders.insert(Network::Irc(irc.name().clone()), sender.clone());
         tasks.spawn(
             IrcEntrypoint {
                 channels: bridges
-                    .irc_channels(&network)
+                    .irc_channels(irc.name())
                     .map(|channel| channel.name().clone())
                     .collect(),
-                network,
-                settings: settings.clone(),
+                config: irc.clone(),
                 store_received_message: store_received_message.clone(),
                 sender,
                 waker: waker.clone(),

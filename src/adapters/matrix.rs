@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, bail};
 use async_trait::async_trait;
@@ -8,43 +8,24 @@ use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::{OwnedTransactionId, RoomId};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::{Client, RoomState};
-use serde::Deserialize;
 
 use crate::application::ports::MessageSender;
+use crate::config::MatrixConfig;
 use crate::domain::channel::Channel;
 use crate::domain::delivery::Delivery;
-
-#[derive(Clone, Debug, Deserialize)]
-pub struct MatrixSettings {
-    pub homeserver: String,
-    pub user: String,
-    pub password: String,
-    pub data_dir: PathBuf,
-    pub store_passphrase: Option<String>,
-    pub recovery_key: Option<String>,
-    #[serde(default = "default_device_name")]
-    pub device_name: String,
-}
-
-fn default_device_name() -> String {
-    "irc-bridge".into()
-}
 
 pub struct MatrixConnection {
     pub client: Client,
     pub fresh_login: bool,
 }
 
-pub async fn connect(settings: &MatrixSettings) -> anyhow::Result<MatrixConnection> {
-    std::fs::create_dir_all(&settings.data_dir)?;
-    let session_path = settings.data_dir.join("session.json");
+pub async fn connect(config: &MatrixConfig) -> anyhow::Result<MatrixConnection> {
+    std::fs::create_dir_all(config.data_dir())?;
+    let session_path = config.data_dir().join("session.json");
 
     let client = Client::builder()
-        .homeserver_url(&settings.homeserver)
-        .sqlite_store(
-            settings.data_dir.join("store"),
-            settings.store_passphrase.as_deref(),
-        )
+        .homeserver_url(config.homeserver())
+        .sqlite_store(config.data_dir().join("store"), config.store_passphrase())
         .build()
         .await?;
 
@@ -60,8 +41,8 @@ pub async fn connect(settings: &MatrixSettings) -> anyhow::Result<MatrixConnecti
     } else {
         let response = client
             .matrix_auth()
-            .login_username(&settings.user, &settings.password)
-            .initial_device_display_name(&settings.device_name)
+            .login_username(config.user(), config.password())
+            .initial_device_display_name(config.device_name())
             .send()
             .await
             .context("matrix login")?;
@@ -70,7 +51,7 @@ pub async fn connect(settings: &MatrixSettings) -> anyhow::Result<MatrixConnecti
         true
     };
 
-    setup_encryption(&client, settings).await?;
+    setup_encryption(&client, config).await?;
     Ok(MatrixConnection {
         client,
         fresh_login,
@@ -87,10 +68,10 @@ fn save_session(path: &Path, session: &MatrixSession) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn setup_encryption(client: &Client, settings: &MatrixSettings) -> anyhow::Result<()> {
+async fn setup_encryption(client: &Client, config: &MatrixConfig) -> anyhow::Result<()> {
     let encryption = client.encryption();
 
-    if let Some(key) = &settings.recovery_key {
+    if let Some(key) = config.recovery_key() {
         encryption
             .recovery()
             .recover(key)
@@ -105,8 +86,8 @@ async fn setup_encryption(client: &Client, settings: &MatrixSettings) -> anyhow:
             return Err(error).context("bootstrapping cross-signing");
         };
         let mut password = uiaa::Password::new(
-            uiaa::UserIdentifier::Matrix(uiaa::MatrixUserIdentifier::new(settings.user.clone())),
-            settings.password.clone(),
+            uiaa::UserIdentifier::Matrix(uiaa::MatrixUserIdentifier::new(config.user().to_owned())),
+            config.password().to_owned(),
         );
         password.session = response.session.clone();
         encryption

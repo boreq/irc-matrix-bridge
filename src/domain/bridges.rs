@@ -14,6 +14,18 @@ impl Bridge {
     pub fn new(name: String, matrix: MatrixRoom, irc: IrcChannel) -> Self {
         Self { name, matrix, irc }
     }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn matrix(&self) -> &MatrixRoom {
+        &self.matrix
+    }
+
+    pub fn irc(&self) -> &IrcChannel {
+        &self.irc
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -40,6 +52,10 @@ impl Bridges {
             }
         }
         Ok(Self { bridges })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Bridge> {
+        self.bridges.iter()
     }
 
     pub fn destination(&self, source: &Channel) -> Option<Channel> {

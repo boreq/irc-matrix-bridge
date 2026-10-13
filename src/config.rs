@@ -1,67 +1,174 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
-use matrix_sdk::ruma::OwnedRoomId;
-use serde::Deserialize;
+use crate::domain::bridges::Bridges;
+use crate::domain::channel::IrcNetworkName;
 
-use crate::adapters::matrix::MatrixSettings;
-use crate::domain::bridges::{Bridge, Bridges};
-use crate::domain::channel::{IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
-use crate::entrypoints::irc::IrcSettings;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug)]
 pub struct Config {
-    pub database: PathBuf,
-    pub matrix: MatrixSettings,
-    #[serde(default)]
-    pub irc: BTreeMap<String, IrcSettings>,
-    #[serde(default, rename = "bridge")]
-    pub bridges: Vec<BridgeConfig>,
+    database: PathBuf,
+    matrix: MatrixConfig,
+    irc_networks: Vec<IrcNetworkConfig>,
+    bridges: Bridges,
 }
 
 impl Config {
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
-    }
-
-    pub fn to_bridges(&self) -> anyhow::Result<Bridges> {
-        let mut bridges = Vec::new();
-        for bridge in &self.bridges {
+    pub fn new(
+        database: PathBuf,
+        matrix: MatrixConfig,
+        irc_networks: Vec<IrcNetworkConfig>,
+        bridges: Bridges,
+    ) -> anyhow::Result<Self> {
+        for bridge in bridges.iter() {
+            let network = bridge.irc().network();
             anyhow::ensure!(
-                self.irc.contains_key(&bridge.irc.network),
-                "bridge `{}` uses unknown irc network `{}`",
-                bridge.name,
-                bridge.irc.network
+                irc_networks.iter().any(|irc| irc.name() == network),
+                "bridge `{}` uses unknown irc network `{network}`",
+                bridge.name()
             );
-            bridges.push(Bridge::new(
-                bridge.name.clone(),
-                MatrixRoom::new(bridge.matrix.as_str()),
-                IrcChannel::new(
-                    IrcNetworkName::new(&bridge.irc.network),
-                    IrcChannelName::new(&bridge.irc.channel)
-                        .with_context(|| format!("bridge `{}`", bridge.name))?,
-                ),
-            ));
         }
-        Ok(Bridges::new(bridges)?)
+        Ok(Self {
+            database,
+            matrix,
+            irc_networks,
+            bridges,
+        })
+    }
+
+    pub fn database(&self) -> &Path {
+        &self.database
+    }
+
+    pub fn matrix(&self) -> &MatrixConfig {
+        &self.matrix
+    }
+
+    pub fn irc_networks(&self) -> &[IrcNetworkConfig] {
+        &self.irc_networks
+    }
+
+    pub fn bridges(&self) -> &Bridges {
+        &self.bridges
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BridgeConfig {
-    pub name: String,
-    pub matrix: OwnedRoomId,
-    pub irc: IrcChannelConfig,
+#[derive(Clone, Debug)]
+pub struct MatrixConfig {
+    homeserver: String,
+    user: String,
+    password: String,
+    data_dir: PathBuf,
+    store_passphrase: Option<String>,
+    recovery_key: Option<String>,
+    device_name: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct IrcChannelConfig {
-    pub network: String,
-    pub channel: String,
+impl MatrixConfig {
+    pub fn new(
+        homeserver: String,
+        user: String,
+        password: String,
+        data_dir: PathBuf,
+        store_passphrase: Option<String>,
+        recovery_key: Option<String>,
+        device_name: String,
+    ) -> Self {
+        Self {
+            homeserver,
+            user,
+            password,
+            data_dir,
+            store_passphrase,
+            recovery_key,
+            device_name,
+        }
+    }
+
+    pub fn homeserver(&self) -> &str {
+        &self.homeserver
+    }
+
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+
+    pub fn password(&self) -> &str {
+        &self.password
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    pub fn store_passphrase(&self) -> Option<&str> {
+        self.store_passphrase.as_deref()
+    }
+
+    pub fn recovery_key(&self) -> Option<&str> {
+        self.recovery_key.as_deref()
+    }
+
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct IrcNetworkConfig {
+    name: IrcNetworkName,
+    server: String,
+    port: u16,
+    tls: bool,
+    nickname: String,
+    password: Option<String>,
+    nick_password: Option<String>,
+}
+
+impl IrcNetworkConfig {
+    pub fn new(
+        name: IrcNetworkName,
+        server: String,
+        port: u16,
+        tls: bool,
+        nickname: String,
+        password: Option<String>,
+        nick_password: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            server,
+            port,
+            tls,
+            nickname,
+            password,
+            nick_password,
+        }
+    }
+
+    pub fn name(&self) -> &IrcNetworkName {
+        &self.name
+    }
+
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn tls(&self) -> bool {
+        self.tls
+    }
+
+    pub fn nickname(&self) -> &str {
+        &self.nickname
+    }
+
+    pub fn password(&self) -> Option<&str> {
+        self.password.as_deref()
+    }
+
+    pub fn nick_password(&self) -> Option<&str> {
+        self.nick_password.as_deref()
+    }
 }

@@ -5,39 +5,18 @@ use futures::StreamExt;
 use irc::client::Client;
 use irc::client::data::Config as IrcClientConfig;
 use irc::proto::{Command, Message as IrcMessage};
-use serde::Deserialize;
 
 use crate::adapters::irc::IrcMessageSender;
 use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler, StoreReceivedMessageOutcome,
 };
 use crate::application::ports::DeliveryWaker;
-use crate::domain::channel::{Channel, IrcChannel, IrcChannelName, IrcNetworkName, Network};
+use crate::config::IrcNetworkConfig;
+use crate::domain::channel::{Channel, IrcChannel, IrcChannelName, Network};
 use crate::domain::message::{Message, MessageKind};
 
-#[derive(Clone, Debug, Deserialize)]
-pub struct IrcSettings {
-    pub server: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-    #[serde(default = "default_tls")]
-    pub tls: bool,
-    pub nickname: String,
-    pub password: Option<String>,
-    pub nick_password: Option<String>,
-}
-
-fn default_port() -> u16 {
-    6697
-}
-
-fn default_tls() -> bool {
-    true
-}
-
 pub struct IrcEntrypoint {
-    pub network: IrcNetworkName,
-    pub settings: IrcSettings,
+    pub config: IrcNetworkConfig,
     pub channels: Vec<IrcChannelName>,
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
     pub sender: Arc<IrcMessageSender>,
@@ -50,9 +29,9 @@ impl IrcEntrypoint {
         loop {
             let started = Instant::now();
             match self.session().await {
-                Ok(()) => tracing::warn!(network = %self.network, "irc connection closed"),
+                Ok(()) => tracing::warn!(network = %self.config.name(), "irc connection closed"),
                 Err(error) => {
-                    tracing::warn!(network = %self.network, "irc connection failed: {error:#}")
+                    tracing::warn!(network = %self.config.name(), "irc connection failed: {error:#}")
                 }
             }
             self.sender.disconnected();
@@ -60,7 +39,7 @@ impl IrcEntrypoint {
             if started.elapsed() > Duration::from_secs(60) {
                 backoff = Duration::from_secs(1);
             }
-            tracing::info!(network = %self.network, "reconnecting in {backoff:?}");
+            tracing::info!(network = %self.config.name(), "reconnecting in {backoff:?}");
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(Duration::from_secs(300));
         }
@@ -71,7 +50,7 @@ impl IrcEntrypoint {
         client.identify()?;
         let mut stream = client.stream()?;
         self.sender.connected(client.sender());
-        tracing::info!(network = %self.network, "connected to irc");
+        tracing::info!(network = %self.config.name(), "connected to irc");
 
         while let Some(message) = stream.next().await.transpose()? {
             self.on_message(&client, message).await;
@@ -80,17 +59,20 @@ impl IrcEntrypoint {
     }
 
     fn client_config(&self) -> IrcClientConfig {
-        let s = &self.settings;
+        let config = &self.config;
         IrcClientConfig {
-            nickname: Some(s.nickname.clone()),
-            alt_nicks: vec![format!("{}_", s.nickname), format!("{}__", s.nickname)],
-            username: Some(s.nickname.clone()),
+            nickname: Some(config.nickname().to_owned()),
+            alt_nicks: vec![
+                format!("{}_", config.nickname()),
+                format!("{}__", config.nickname()),
+            ],
+            username: Some(config.nickname().to_owned()),
             realname: Some("irc-bridge".into()),
-            server: Some(s.server.clone()),
-            port: Some(s.port),
-            use_tls: Some(s.tls),
-            password: s.password.clone(),
-            nick_password: s.nick_password.clone(),
+            server: Some(config.server().to_owned()),
+            port: Some(config.port()),
+            use_tls: Some(config.tls()),
+            password: config.password().map(ToOwned::to_owned),
+            nick_password: config.nick_password().map(ToOwned::to_owned),
             channels: self
                 .channels
                 .iter()
@@ -108,16 +90,16 @@ impl IrcEntrypoint {
         match &message.command {
             Command::JOIN(channels, _, _) if from_me => {
                 for channel in channel_names(channels) {
-                    tracing::info!(network = %self.network, %channel, "joined");
+                    tracing::info!(network = %self.config.name(), %channel, "joined");
                     self.sender.joined(channel);
                 }
-                self.waker.wake(&Network::Irc(self.network.clone()));
+                self.waker.wake(&Network::Irc(self.config.name().clone()));
             }
             Command::PART(channels, _) if from_me => {
                 channel_names(channels).for_each(|channel| self.sender.left(&channel));
             }
             Command::KICK(channel, nick, reason) if nick.eq_ignore_ascii_case(me) => {
-                tracing::warn!(network = %self.network, %channel, ?reason, "kicked, rejoining");
+                tracing::warn!(network = %self.config.name(), %channel, ?reason, "kicked, rejoining");
                 channel_names(channel).for_each(|name| self.sender.left(&name));
                 if let Err(error) = client.send_join(channel) {
                     tracing::warn!("rejoin failed: {error}");
@@ -140,7 +122,7 @@ impl IrcEntrypoint {
 
     async fn store(&self, channel: IrcChannelName, nick: &str, kind: MessageKind, body: String) {
         let message = Message::new(
-            Channel::Irc(IrcChannel::new(self.network.clone(), channel.clone())),
+            Channel::Irc(IrcChannel::new(self.config.name().clone(), channel.clone())),
             None,
             nick.to_owned(),
             kind,
@@ -157,7 +139,7 @@ impl IrcEntrypoint {
                 | StoreReceivedMessageOutcome::Duplicate,
             ) => {}
             Err(error) => {
-                tracing::error!(network = %self.network, %channel, "storing message failed: {error:#}")
+                tracing::error!(network = %self.config.name(), %channel, "storing message failed: {error:#}")
             }
         }
     }
