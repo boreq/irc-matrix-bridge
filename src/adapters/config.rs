@@ -66,8 +66,6 @@ impl TomlConfig {
 #[serde(deny_unknown_fields)]
 struct TomlMatrix {
     homeserver: String,
-    user: String,
-    password: String,
     data_dir: PathBuf,
     store_passphrase: Option<String>,
     recovery_key: Option<String>,
@@ -79,8 +77,6 @@ impl TomlMatrix {
     fn into_config(self) -> MatrixConfig {
         MatrixConfig::new(
             self.homeserver,
-            self.user,
-            self.password,
             self.data_dir,
             self.store_passphrase,
             self.recovery_key,
@@ -166,8 +162,6 @@ database = "bridge.db"
 
 [matrix]
 homeserver = "https://matrix.example.org"
-user = "@bridge:example.org"
-password = "secret"
 data_dir = "matrix"
 
 [irc.network]

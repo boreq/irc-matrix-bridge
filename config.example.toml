@@ -2,8 +2,6 @@ database = "data/bridge.db"
 
 [matrix]
 homeserver = "https://matrix.example.org"
-user = "@bridge:example.org"
-password = "secret"
 data_dir = "data/matrix"
 store_passphrase = "another secret"
 

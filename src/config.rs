@@ -54,8 +54,6 @@ impl Config {
 #[derive(Clone, Debug)]
 pub struct MatrixConfig {
     homeserver: String,
-    user: String,
-    password: String,
     data_dir: PathBuf,
     store_passphrase: Option<String>,
     recovery_key: Option<String>,
@@ -65,8 +63,6 @@ pub struct MatrixConfig {
 impl MatrixConfig {
     pub fn new(
         homeserver: String,
-        user: String,
-        password: String,
         data_dir: PathBuf,
         store_passphrase: Option<String>,
         recovery_key: Option<String>,
@@ -74,8 +70,6 @@ impl MatrixConfig {
     ) -> Self {
         Self {
             homeserver,
-            user,
-            password,
             data_dir,
             store_passphrase,
             recovery_key,
@@ -85,14 +79,6 @@ impl MatrixConfig {
 
     pub fn homeserver(&self) -> &str {
         &self.homeserver
-    }
-
-    pub fn user(&self) -> &str {
-        &self.user
-    }
-
-    pub fn password(&self) -> &str {
-        &self.password
     }
 
     pub fn data_dir(&self) -> &Path {

@@ -3,7 +3,6 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use matrix_sdk::authentication::matrix::MatrixSession;
-use matrix_sdk::ruma::api::client::uiaa;
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::{OwnedTransactionId, RoomId};
 use matrix_sdk::store::RoomLoadSettings;
@@ -41,7 +40,10 @@ pub async fn connect(config: &MatrixConfig) -> anyhow::Result<MatrixConnection> 
     } else {
         let response = client
             .matrix_auth()
-            .login_username(config.user(), config.password())
+            .login_sso(|url| async move {
+                tracing::info!("open this link to log in to matrix: {url}");
+                Ok(())
+            })
             .initial_device_display_name(config.device_name())
             .send()
             .await
@@ -81,21 +83,10 @@ async fn setup_encryption(client: &Client, config: &MatrixConfig) -> anyhow::Res
         return Ok(());
     }
 
-    if let Err(error) = encryption.bootstrap_cross_signing_if_needed(None).await {
-        let Some(response) = error.as_uiaa_response() else {
-            return Err(error).context("bootstrapping cross-signing");
-        };
-        let mut password = uiaa::Password::new(
-            uiaa::UserIdentifier::Matrix(uiaa::MatrixUserIdentifier::new(config.user().to_owned())),
-            config.password().to_owned(),
-        );
-        password.session = response.session.clone();
-        encryption
-            .bootstrap_cross_signing(Some(uiaa::AuthData::Password(password)))
-            .await
-            .context("bootstrapping cross-signing")?;
-        tracing::info!("created cross-signing identity");
-    }
+    encryption
+        .bootstrap_cross_signing_if_needed(None)
+        .await
+        .context("bootstrapping cross-signing, set recovery_key if the account already has it")?;
     Ok(())
 }
 
