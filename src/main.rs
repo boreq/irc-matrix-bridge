@@ -75,6 +75,9 @@ async fn main() -> anyhow::Result<()> {
                     .irc_channels(irc.name())
                     .map(|channel| channel.name().clone())
                     .collect(),
+                client_cert: config
+                    .database()
+                    .with_file_name(format!("irc-{}.pem", irc.name())),
                 config: irc.clone(),
                 store_received_message: store_received_message.clone(),
                 sender,

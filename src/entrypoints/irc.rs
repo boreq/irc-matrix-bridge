@@ -1,10 +1,14 @@
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use anyhow::Context;
 use futures::StreamExt;
 use irc::client::Client;
 use irc::client::data::Config as IrcClientConfig;
 use irc::proto::{Command, Message as IrcMessage};
+use sha2::{Digest, Sha256};
 
 use crate::adapters::irc::IrcMessageSender;
 use crate::application::commands::store_received_message::{
@@ -17,6 +21,9 @@ use crate::domain::message::{Message, MessageKind};
 
 pub struct IrcEntrypoint {
     pub config: IrcNetworkConfig,
+    /// PEM file with the TLS client certificate and key services know the
+    /// bridge by (CertFP), generated on first launch.
+    pub client_cert: PathBuf,
     pub channels: Vec<IrcChannelName>,
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
     pub sender: Arc<IrcMessageSender>,
@@ -25,10 +32,22 @@ pub struct IrcEntrypoint {
 
 impl IrcEntrypoint {
     pub async fn run(self) {
+        let client_cert = if self.config.tls() {
+            match self.load_client_cert() {
+                Ok(pem) => Some(pem),
+                Err(error) => {
+                    tracing::error!(network = %self.config.name(), "{error:#}");
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+
         let mut backoff = Duration::from_secs(1);
         loop {
             let started = Instant::now();
-            match self.session().await {
+            match self.session(client_cert.as_deref()).await {
                 Ok(()) => tracing::warn!(network = %self.config.name(), "irc connection closed"),
                 Err(error) => {
                     tracing::warn!(network = %self.config.name(), "irc connection failed: {error:#}")
@@ -45,8 +64,20 @@ impl IrcEntrypoint {
         }
     }
 
-    async fn session(&self) -> anyhow::Result<()> {
-        let mut client = Client::from_config(self.client_config()).await?;
+    fn load_client_cert(&self) -> anyhow::Result<String> {
+        let path = &self.client_cert;
+        let pem = load_or_generate_cert(path)
+            .with_context(|| format!("client certificate {}", path.display()))?;
+        let fingerprint = fingerprint(&pem)?;
+        tracing::info!(
+            network = %self.config.name(),
+            "client certificate fingerprint (sha256) {fingerprint}, register it with `/msg NickServ CERT ADD {fingerprint}`"
+        );
+        Ok(pem)
+    }
+
+    async fn session(&self, client_cert: Option<&str>) -> anyhow::Result<()> {
+        let mut client = Client::from_config(self.client_config(client_cert)).await?;
         client.identify()?;
         let mut stream = client.stream()?;
         self.sender.connected(client.sender());
@@ -58,7 +89,7 @@ impl IrcEntrypoint {
         Ok(())
     }
 
-    fn client_config(&self) -> IrcClientConfig {
+    fn client_config(&self, client_cert: Option<&str>) -> IrcClientConfig {
         let config = &self.config;
         IrcClientConfig {
             nickname: Some(config.nickname().to_owned()),
@@ -73,6 +104,10 @@ impl IrcEntrypoint {
             use_tls: Some(config.tls()),
             password: config.password().map(ToOwned::to_owned),
             nick_password: config.nick_password().map(ToOwned::to_owned),
+            // With rustls the irc crate reads the certificate from the path and
+            // the private key from the PEM text in `client_cert_pass`.
+            client_cert_path: client_cert.map(|_| self.client_cert.to_string_lossy().into_owned()),
+            client_cert_pass: client_cert.map(ToOwned::to_owned),
             channels: self
                 .channels
                 .iter()
@@ -145,6 +180,43 @@ impl IrcEntrypoint {
     }
 }
 
+/// Reads the PEM file with the certificate and key, generating a self-signed
+/// one on first use.
+fn load_or_generate_cert(path: &Path) -> anyhow::Result<String> {
+    if path.exists() {
+        return Ok(std::fs::read_to_string(path)?);
+    }
+    let certified = rcgen::generate_simple_self_signed(Vec::<String>::new())?;
+    let pem = format!(
+        "{}{}",
+        certified.cert.pem(),
+        certified.signing_key.serialize_pem()
+    );
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(pem.as_bytes())?;
+    tracing::info!(path = %path.display(), "generated irc client certificate");
+    Ok(pem)
+}
+
+/// SHA-256 of the certificate as lowercase hex, the format hackint's NickServ uses.
+fn fingerprint(pem: &str) -> anyhow::Result<String> {
+    let cert = pem::parse_many(pem)?
+        .into_iter()
+        .find(|block| block.tag() == "CERTIFICATE")
+        .context("no certificate in pem")?;
+    Ok(Sha256::digest(cert.contents())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
 fn channel_names(channels: &str) -> impl Iterator<Item = IrcChannelName> {
     channels
         .split(',')
@@ -209,6 +281,17 @@ mod tests {
             parse_privmsg("hi"),
             Some((MessageKind::Normal, "hi".into()))
         );
+    }
+
+    #[test]
+    fn generates_client_cert_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cert.pem");
+
+        let pem = load_or_generate_cert(&path).unwrap();
+
+        assert!(pem.contains("BEGIN CERTIFICATE") && pem.contains("BEGIN PRIVATE KEY"));
+        assert_eq!(load_or_generate_cert(&path).unwrap(), pem);
     }
 
     #[test]
