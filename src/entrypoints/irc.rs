@@ -84,6 +84,7 @@ impl IrcEntrypoint {
         tracing::info!(network = %self.config.name(), "connected to irc");
 
         while let Some(message) = stream.next().await.transpose()? {
+            tracing::debug!(network = %self.config.name(), "[RECV] {}", message.to_string().trim_end());
             self.on_message(&client, message).await;
         }
         Ok(())

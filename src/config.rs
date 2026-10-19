@@ -9,6 +9,7 @@ pub struct Config {
     matrix: MatrixConfig,
     irc_networks: Vec<IrcNetworkConfig>,
     bridges: Bridges,
+    debug: bool,
 }
 
 impl Config {
@@ -17,6 +18,7 @@ impl Config {
         matrix: MatrixConfig,
         irc_networks: Vec<IrcNetworkConfig>,
         bridges: Bridges,
+        debug: bool,
     ) -> anyhow::Result<Self> {
         for bridge in bridges.iter() {
             let network = bridge.irc().network();
@@ -31,6 +33,7 @@ impl Config {
             matrix,
             irc_networks,
             bridges,
+            debug,
         })
     }
 
@@ -48,6 +51,10 @@ impl Config {
 
     pub fn bridges(&self) -> &Bridges {
         &self.bridges
+    }
+
+    pub fn debug(&self) -> bool {
+        self.debug
     }
 }
 

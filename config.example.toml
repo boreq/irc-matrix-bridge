@@ -1,4 +1,5 @@
 database = "data/bridge.db"
+debug = false
 
 [matrix]
 homeserver = "https://matrix.example.org"

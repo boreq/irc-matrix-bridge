@@ -39,6 +39,8 @@ struct TomlConfig {
     irc: BTreeMap<String, TomlIrcNetwork>,
     #[serde(default, rename = "bridge")]
     bridges: Vec<TomlBridge>,
+    #[serde(default)]
+    debug: bool,
 }
 
 impl TomlConfig {
@@ -58,6 +60,7 @@ impl TomlConfig {
             self.matrix.into_config(),
             irc_networks,
             Bridges::new(bridges)?,
+            self.debug,
         )
     }
 }

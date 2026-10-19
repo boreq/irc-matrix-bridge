@@ -25,16 +25,20 @@ use irc_bridge::entrypoints::matrix::MatrixEntrypoint;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("info,matrix_sdk=warn,matrix_sdk_crypto=warn,matrix_sdk_base=warn")
-        }))
-        .init();
-
     let config_path = std::env::args()
         .nth(1)
         .map_or_else(|| PathBuf::from("config.toml"), PathBuf::from);
     let config = TomlConfigLoader::new(config_path).load()?;
+
+    let mut filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        EnvFilter::new("info,matrix_sdk=warn,matrix_sdk_crypto=warn,matrix_sdk_base=warn")
+    });
+    if config.debug() {
+        filter = filter
+            .add_directive("irc::client::transport=trace".parse()?)
+            .add_directive("irc_bridge::entrypoints::irc=debug".parse()?);
+    }
+    tracing_subscriber::fmt().with_env_filter(filter).init();
     let bridges = Arc::new(config.bridges().clone());
 
     let repository: Arc<dyn MessageRepository> =
