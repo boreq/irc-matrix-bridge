@@ -4,6 +4,9 @@ database = "data/bridge.db"
 homeserver = "https://matrix.example.org"
 data_dir = "data/matrix"
 store_passphrase = "another secret"
+# First login: open the link the bridge prints, log in, paste the address
+# the browser ends up on here and restart within 2 minutes.
+# bootstrap_link = "http://localhost/?loginToken=..."
 
 [irc.libera]
 server = "irc.libera.chat"

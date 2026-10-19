@@ -58,6 +58,7 @@ pub struct MatrixConfig {
     store_passphrase: Option<String>,
     recovery_key: Option<String>,
     device_name: String,
+    bootstrap_link: Option<String>,
 }
 
 impl MatrixConfig {
@@ -67,6 +68,7 @@ impl MatrixConfig {
         store_passphrase: Option<String>,
         recovery_key: Option<String>,
         device_name: String,
+        bootstrap_link: Option<String>,
     ) -> Self {
         Self {
             homeserver,
@@ -74,6 +76,7 @@ impl MatrixConfig {
             store_passphrase,
             recovery_key,
             device_name,
+            bootstrap_link,
         }
     }
 
@@ -95,6 +98,11 @@ impl MatrixConfig {
 
     pub fn device_name(&self) -> &str {
         &self.device_name
+    }
+
+    /// Address the browser ends up on after SSO login, used once to log in.
+    pub fn bootstrap_link(&self) -> Option<&str> {
+        self.bootstrap_link.as_deref()
     }
 }
 

@@ -3,9 +3,11 @@ use std::path::Path;
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use matrix_sdk::authentication::matrix::MatrixSession;
+use matrix_sdk::ruma::api::client::session::login;
 use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::{OwnedTransactionId, RoomId};
 use matrix_sdk::store::RoomLoadSettings;
+use matrix_sdk::utils::UrlOrQuery;
 use matrix_sdk::{Client, RoomState};
 
 use crate::application::ports::MessageSender;
@@ -38,16 +40,7 @@ pub async fn connect(config: &MatrixConfig) -> anyhow::Result<MatrixConnection> 
         tracing::info!(device = ?client.device_id(), "restored matrix session");
         false
     } else {
-        let response = client
-            .matrix_auth()
-            .login_sso(|url| async move {
-                tracing::info!("open this link to log in to matrix: {url}");
-                Ok(())
-            })
-            .initial_device_display_name(config.device_name())
-            .send()
-            .await
-            .context("matrix login")?;
+        let response = login(&client, config).await.context("matrix login")?;
         save_session(&session_path, &MatrixSession::from(&response))?;
         tracing::info!(device = %response.device_id, "logged in to matrix");
         true
@@ -58,6 +51,34 @@ pub async fn connect(config: &MatrixConfig) -> anyhow::Result<MatrixConnection> 
         client,
         fresh_login,
     })
+}
+
+/// The page never loads; the user copies the address into `bootstrap_link`.
+const SSO_REDIRECT_URL: &str = "http://localhost/";
+
+async fn login(client: &Client, config: &MatrixConfig) -> anyhow::Result<login::v3::Response> {
+    let auth = client.matrix_auth();
+    if let Some(link) = config.bootstrap_link() {
+        let query = link.split_once('?').map_or(link, |(_, query)| query);
+        let result = auth
+            .login_with_sso_callback(UrlOrQuery::Query(query.to_owned()))?
+            .initial_device_display_name(config.device_name())
+            .send()
+            .await;
+        match result {
+            Ok(response) => return Ok(response),
+            Err(error) => tracing::warn!(
+                "bootstrap_link didn't work, it works once and expires 2 minutes after login: {error}"
+            ),
+        }
+    }
+
+    let url = auth.get_sso_login_url(SSO_REDIRECT_URL, None).await?;
+    tracing::info!("open this link to log in to matrix: {url}");
+    tracing::info!(
+        "then copy the address the browser ends up on (the page won't load) into `bootstrap_link` under [matrix] and restart within 2 minutes"
+    );
+    bail!("not logged in to matrix");
 }
 
 fn save_session(path: &Path, session: &MatrixSession) -> anyhow::Result<()> {

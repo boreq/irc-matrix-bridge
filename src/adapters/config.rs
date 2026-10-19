@@ -71,6 +71,7 @@ struct TomlMatrix {
     recovery_key: Option<String>,
     #[serde(default = "default_device_name")]
     device_name: String,
+    bootstrap_link: Option<String>,
 }
 
 impl TomlMatrix {
@@ -81,6 +82,7 @@ impl TomlMatrix {
             self.store_passphrase,
             self.recovery_key,
             self.device_name,
+            self.bootstrap_link,
         )
     }
 }
