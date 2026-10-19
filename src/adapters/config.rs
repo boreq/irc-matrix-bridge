@@ -6,7 +6,7 @@ use matrix_sdk::ruma::OwnedRoomId;
 use serde::Deserialize;
 
 use crate::config::{Config, IrcNetworkConfig, MatrixConfig};
-use crate::domain::bridges::{Bridge, Bridges};
+use crate::domain::bridges::{Bridge, BridgeName, Bridges};
 use crate::domain::channel::{IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
 
 pub struct TomlConfigLoader {
@@ -142,7 +142,7 @@ impl TomlBridge {
         let channel = IrcChannelName::new(&self.irc.channel)
             .with_context(|| format!("bridge `{}`", self.name))?;
         Ok(Bridge::new(
-            self.name,
+            BridgeName::new(&self.name)?,
             MatrixRoom::new(self.matrix.as_str()),
             IrcChannel::new(IrcNetworkName::new(self.irc.network), channel),
         ))

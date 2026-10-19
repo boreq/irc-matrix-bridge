@@ -1,21 +1,24 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+
+use anyhow::anyhow;
 
 use crate::domain::channel::{Channel, IrcChannel, IrcNetworkName, MatrixRoom};
 use crate::errors::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct Bridge {
-    name: String,
+    name: BridgeName,
     matrix: MatrixRoom,
     irc: IrcChannel,
 }
 
 impl Bridge {
-    pub fn new(name: String, matrix: MatrixRoom, irc: IrcChannel) -> Self {
+    pub fn new(name: BridgeName, matrix: MatrixRoom, irc: IrcChannel) -> Self {
         Self { name, matrix, irc }
     }
 
-    pub fn name(&self) -> &str {
+    pub fn name(&self) -> &BridgeName {
         &self.name
     }
 
@@ -28,6 +31,28 @@ impl Bridge {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BridgeName {
+    name: String,
+}
+
+impl BridgeName {
+    pub fn new(name: &str) -> Result<Self> {
+        if name.is_empty() {
+            return Err(Error::Unknown(anyhow!("bridge name is empty")));
+        }
+        Ok(Self {
+            name: name.to_owned(),
+        })
+    }
+}
+
+impl fmt::Display for BridgeName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Bridges {
     bridges: Vec<Bridge>,
@@ -35,8 +60,14 @@ pub struct Bridges {
 
 impl Bridges {
     pub fn new(bridges: Vec<Bridge>) -> Result<Self> {
-        let mut owners: HashMap<Channel, &str> = HashMap::new();
+        let mut names = HashSet::new();
+        let mut owners: HashMap<Channel, &BridgeName> = HashMap::new();
         for bridge in &bridges {
+            if !names.insert(&bridge.name) {
+                return Err(Error::DuplicateBridgeName {
+                    name: bridge.name.clone(),
+                });
+            }
             let channels = [
                 Channel::Matrix(bridge.matrix.clone()),
                 Channel::Irc(bridge.irc.clone()),
@@ -45,7 +76,7 @@ impl Bridges {
                 if let Some(first) = owners.insert(channel.clone(), &bridge.name) {
                     return Err(Error::ChannelInTwoBridges {
                         channel,
-                        first: first.to_owned(),
+                        first: first.clone(),
                         second: bridge.name.clone(),
                     });
                 }
@@ -106,7 +137,19 @@ mod tests {
     }
 
     fn bridge(name: &str, room: &str, channel: &str) -> Bridge {
-        Bridge::new(name.into(), MatrixRoom::new(room), irc_channel(channel))
+        Bridge::new(
+            BridgeName::new(name).unwrap(),
+            MatrixRoom::new(room),
+            irc_channel(channel),
+        )
+    }
+
+    #[test]
+    fn validates_bridge_names() {
+        let cases = [("bridge", true), ("", false)];
+        for (name, valid) in cases {
+            assert_eq!(BridgeName::new(name).is_ok(), valid, "{name:?}");
+        }
     }
 
     #[test]
@@ -125,5 +168,11 @@ mod tests {
             bridge("b", "!b", "#shared"),
         ]);
         assert!(matches!(result, Err(Error::ChannelInTwoBridges { .. })));
+    }
+
+    #[test]
+    fn rejects_duplicate_bridge_names() {
+        let result = Bridges::new(vec![bridge("a", "!a", "#a"), bridge("a", "!b", "#b")]);
+        assert!(matches!(result, Err(Error::DuplicateBridgeName { .. })));
     }
 }
