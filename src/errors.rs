@@ -1,7 +1,6 @@
 use thiserror::Error;
 
-use crate::domain::bridges::BridgeName;
-use crate::domain::channel::Channel;
+use crate::domain::{BridgeName, Channel};
 
 #[derive(Error, Debug)]
 pub enum Error {

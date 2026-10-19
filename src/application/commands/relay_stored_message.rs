@@ -5,9 +5,8 @@ use std::time::Duration;
 use anyhow::{Context, anyhow};
 
 use crate::application::ports::{Clock, MessageRepository, MessageSender};
-use crate::domain::channel::{Channel, Network};
-use crate::domain::delivery::RetryPolicy;
 use crate::domain::time::DateTime;
+use crate::domain::{Channel, Network, RetryPolicy};
 
 pub struct RelayStoredMessage {
     pub destination: Channel,
@@ -107,9 +106,10 @@ mod tests {
 
     use super::*;
     use crate::application::ports::StoreOutcome;
-    use crate::domain::channel::{IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
-    use crate::domain::delivery::Delivery;
-    use crate::domain::message::{Message, MessageId, MessageKind};
+    use crate::domain::{
+        Delivery, IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom, Message, MessageBody,
+        MessageId, MessageKind,
+    };
     use uuid::Uuid;
 
     #[derive(Default)]
@@ -225,7 +225,7 @@ mod tests {
                 None,
                 "alice".into(),
                 MessageKind::Normal,
-                format!("message {n}"),
+                MessageBody::new(&format!("message {n}")).unwrap(),
             ),
             destination(),
             attempts,

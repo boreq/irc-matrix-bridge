@@ -12,8 +12,9 @@ use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler,
 };
 use crate::application::ports::DeliveryWaker;
-use crate::domain::channel::{Channel, MatrixRoom, Network};
-use crate::domain::message::{Message, MessageKind};
+use crate::domain::{
+    Channel, MatrixEventId, MatrixRoom, Message, MessageBody, MessageKind, Network,
+};
 
 pub struct MatrixEntrypoint {
     pub client: Client,
@@ -25,10 +26,10 @@ pub struct MatrixEntrypoint {
 
 impl MatrixEntrypoint {
     pub async fn run(self) {
-        if self.skip_backlog {
-            if let Err(error) = self.client.sync_once(SyncSettings::default()).await {
-                tracing::warn!("initial matrix sync failed: {error}");
-            }
+        if self.skip_backlog
+            && let Err(error) = self.client.sync_once(SyncSettings::default()).await
+        {
+            tracing::warn!("initial matrix sync failed: {error}");
         }
 
         self.join_rooms().await;
@@ -127,26 +128,25 @@ async fn on_room_message(
         ),
         msgtype => (MessageKind::Normal, msgtype.body().to_owned()),
     };
+    let Ok(body) = MessageBody::new(&body) else {
+        return;
+    };
 
     let sender = match room.get_member_no_sync(&event.sender).await {
         Ok(Some(member)) => member.name().to_owned(),
         _ => event.sender.localpart().to_owned(),
     };
 
-    let source = match MatrixRoom::new(room.room_id().as_str()) {
-        Ok(source) => source,
+    let ids = MatrixRoom::new(room.room_id().as_str())
+        .and_then(|source| Ok((source, MatrixEventId::new(event.event_id.as_str())?)));
+    let (source, event_id) = match ids {
+        Ok(ids) => ids,
         Err(error) => {
             tracing::error!(room_id = %room.room_id(), "{error:#}");
             return;
         }
     };
-    let message = Message::new(
-        Channel::Matrix(source),
-        Some(event.event_id.to_string()),
-        sender,
-        kind,
-        body,
-    );
+    let message = Message::new(Channel::Matrix(source), Some(event_id), sender, kind, body);
     if let Err(error) = handler.handle(StoreReceivedMessage { message }).await {
         tracing::error!(room_id = %room.room_id(), "storing message failed: {error:#}");
     }

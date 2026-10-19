@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 use crate::application::ports::DeliveryWaker;
-use crate::domain::channel::Network;
+use crate::domain::Network;
 
 pub struct NotifyWaker {
     notifiers: HashMap<Network, Arc<Notify>>,

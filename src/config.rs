@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::domain::bridges::Bridges;
-use crate::domain::channel::IrcNetworkName;
+use crate::domain::{Bridges, IrcNetworkName};
 
 #[derive(Clone, Debug)]
 pub struct Config {

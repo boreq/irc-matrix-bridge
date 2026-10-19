@@ -5,8 +5,9 @@ use anyhow::Context;
 use serde::Deserialize;
 
 use crate::config::{Config, IrcNetworkConfig, MatrixConfig};
-use crate::domain::bridges::{Bridge, BridgeName, Bridges};
-use crate::domain::channel::{IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
+use crate::domain::{
+    Bridge, BridgeName, Bridges, IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom,
+};
 
 pub struct TomlConfigLoader {
     path: PathBuf,

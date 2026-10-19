@@ -10,7 +10,7 @@ use crate::application::ports::Clock;
 use crate::application::queries::pending_destinations::{
     PendingDestinations, PendingDestinationsHandler,
 };
-use crate::domain::channel::Network;
+use crate::domain::Network;
 use crate::domain::time::DateTime;
 
 const MAX_IDLE: Duration = Duration::from_secs(60);
@@ -89,9 +89,10 @@ mod tests {
     use super::*;
     use crate::adapters::sqlite::SqliteMessageRepository;
     use crate::application::ports::{MessageRepository, MessageSender};
-    use crate::domain::channel::{Channel, IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom};
-    use crate::domain::delivery::{Delivery, RetryPolicy};
-    use crate::domain::message::{Message, MessageId, MessageKind};
+    use crate::domain::{
+        Channel, Delivery, IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom, Message,
+        MessageBody, MessageId, MessageKind, RetryPolicy,
+    };
 
     struct FakeSender {
         broken: Channel,
@@ -140,7 +141,7 @@ mod tests {
                 None,
                 "alice".into(),
                 MessageKind::Normal,
-                "hello".into(),
+                MessageBody::new("hello").unwrap(),
             );
             for destination in [&broken, &ok] {
                 repository

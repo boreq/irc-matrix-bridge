@@ -16,8 +16,9 @@ use crate::application::commands::store_received_message::{
 };
 use crate::application::ports::DeliveryWaker;
 use crate::config::IrcNetworkConfig;
-use crate::domain::channel::{Channel, IrcChannel, IrcChannelName, Network};
-use crate::domain::message::{Message, MessageKind};
+use crate::domain::{
+    Channel, IrcChannel, IrcChannelName, Message, MessageBody, MessageKind, Network,
+};
 
 pub struct IrcEntrypoint {
     pub config: IrcNetworkConfig,
@@ -156,7 +157,13 @@ impl IrcEntrypoint {
         }
     }
 
-    async fn store(&self, channel: IrcChannelName, nick: &str, kind: MessageKind, body: String) {
+    async fn store(
+        &self,
+        channel: IrcChannelName,
+        nick: &str,
+        kind: MessageKind,
+        body: MessageBody,
+    ) {
         let message = Message::new(
             Channel::Irc(IrcChannel::new(self.config.name().clone(), channel.clone())),
             None,
@@ -224,7 +231,7 @@ fn channel_names(channels: &str) -> impl Iterator<Item = IrcChannelName> {
         .filter_map(|channel| IrcChannelName::new(channel).ok())
 }
 
-fn parse_privmsg(text: &str) -> Option<(MessageKind, String)> {
+fn parse_privmsg(text: &str) -> Option<(MessageKind, MessageBody)> {
     let (kind, text) = match text.strip_prefix('\u{1}') {
         Some(ctcp) => {
             let action = ctcp.trim_end_matches('\u{1}').strip_prefix("ACTION ")?;
@@ -232,8 +239,8 @@ fn parse_privmsg(text: &str) -> Option<(MessageKind, String)> {
         }
         None => (MessageKind::Normal, text),
     };
-    let text = strip_formatting(text);
-    (!text.trim().is_empty()).then_some((kind, text))
+    let body = MessageBody::new(&strip_formatting(text)).ok()?;
+    Some((kind, body))
 }
 
 fn strip_formatting(text: &str) -> String {
@@ -273,15 +280,14 @@ mod tests {
 
     #[test]
     fn parses_actions_and_drops_other_ctcp() {
+        let body = |text| MessageBody::new(text).unwrap();
         assert_eq!(
             parse_privmsg("\u{1}ACTION waves\u{1}"),
-            Some((MessageKind::Action, "waves".into()))
+            Some((MessageKind::Action, body("waves")))
         );
         assert_eq!(parse_privmsg("\u{1}VERSION\u{1}"), None);
-        assert_eq!(
-            parse_privmsg("hi"),
-            Some((MessageKind::Normal, "hi".into()))
-        );
+        assert_eq!(parse_privmsg("hi"), Some((MessageKind::Normal, body("hi"))));
+        assert_eq!(parse_privmsg("\u{2}\u{2} "), None);
     }
 
     #[test]

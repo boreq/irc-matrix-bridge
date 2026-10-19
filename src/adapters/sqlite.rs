@@ -7,12 +7,11 @@ use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
 use crate::application::ports::{MessageRepository, StoreOutcome};
-use crate::domain::channel::{
-    Channel, IrcChannel, IrcChannelName, IrcNetworkName, MatrixRoom, Network,
-};
-use crate::domain::delivery::Delivery;
-use crate::domain::message::{Message, MessageId, MessageKind};
 use crate::domain::time::DateTime;
+use crate::domain::{
+    Channel, Delivery, IrcChannel, IrcChannelName, IrcNetworkName, MatrixEventId, MatrixRoom,
+    Message, MessageBody, MessageId, MessageKind, Network,
+};
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS messages (
@@ -137,10 +136,10 @@ impl MessageRepository for SqliteMessageRepository {
                     id.to_string(),
                     source_network,
                     source_channel,
-                    message.external_id(),
+                    message.matrix_event_id().map(MatrixEventId::as_str),
                     message.sender(),
                     kind_column(message.kind()),
-                    message.body(),
+                    message.body().as_str(),
                     now.unix_millis(),
                     destination_network,
                     destination_channel,
@@ -209,7 +208,7 @@ impl MessageRepository for SqliteMessageRepository {
                 next_attempt_at,
                 source_network,
                 source_channel,
-                external_id,
+                matrix_event_id,
                 sender,
                 kind,
                 body,
@@ -221,10 +220,13 @@ impl MessageRepository for SqliteMessageRepository {
                 id_from_column(&id)?,
                 Message::new(
                     channel_from_columns(&source_network, source_channel)?,
-                    external_id,
+                    matrix_event_id
+                        .as_deref()
+                        .map(MatrixEventId::new)
+                        .transpose()?,
                     sender,
                     kind_from_column(&kind)?,
-                    body,
+                    MessageBody::new(&body)?,
                 ),
                 destination,
                 attempts,
@@ -336,13 +338,13 @@ fn channel_from_columns(network: &str, name: String) -> anyhow::Result<Channel> 
 mod tests {
     use super::*;
 
-    fn message(external_id: Option<&str>) -> Message {
+    fn message(event_id: Option<&str>) -> Message {
         Message::new(
             Channel::Matrix(MatrixRoom::new("!room:example.org").unwrap()),
-            external_id.map(Into::into),
+            event_id.map(|id| MatrixEventId::new(id).unwrap()),
             "alice".into(),
             MessageKind::Action,
-            "waves".into(),
+            MessageBody::new("waves").unwrap(),
         )
     }
 
@@ -382,19 +384,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drops_duplicate_external_ids_but_not_messages_without_one() {
+    async fn drops_duplicate_matrix_event_ids_but_not_messages_without_one() {
         let repo = SqliteMessageRepository::in_memory().unwrap();
-        let store = |external_id| {
+        let store = |event_id| {
             let repo = repo.clone();
             async move {
-                repo.store(
-                    MessageId::generate(),
-                    &message(external_id),
-                    &irc("#a"),
-                    at(0),
-                )
-                .await
-                .unwrap()
+                repo.store(MessageId::generate(), &message(event_id), &irc("#a"), at(0))
+                    .await
+                    .unwrap()
             }
         };
 

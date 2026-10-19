@@ -1,9 +1,7 @@
 use async_trait::async_trait;
 
-use crate::domain::channel::{Channel, Network};
-use crate::domain::delivery::Delivery;
-use crate::domain::message::{Message, MessageId};
 use crate::domain::time::DateTime;
+use crate::domain::{Channel, Delivery, Message, MessageId, Network};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StoreOutcome {

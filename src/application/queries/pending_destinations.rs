@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::application::ports::MessageRepository;
-use crate::domain::channel::{Channel, Network};
+use crate::domain::{Channel, Network};
 
 pub struct PendingDestinations {
     pub network: Network,

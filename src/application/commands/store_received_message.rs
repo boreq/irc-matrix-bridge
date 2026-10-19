@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use crate::application::ports::{Clock, DeliveryWaker, MessageRepository, StoreOutcome};
-use crate::domain::bridges::Bridges;
-use crate::domain::message::{Message, MessageId};
+use crate::domain::{Bridges, Message, MessageId};
 
 pub struct StoreReceivedMessage {
     pub message: Message,

@@ -17,8 +17,7 @@ use irc_bridge::application::commands::relay_stored_message::RelayStoredMessageH
 use irc_bridge::application::commands::store_received_message::StoreReceivedMessageHandler;
 use irc_bridge::application::ports::{Clock, DeliveryWaker, MessageRepository, MessageSender};
 use irc_bridge::application::queries::pending_destinations::PendingDestinationsHandler;
-use irc_bridge::domain::channel::Network;
-use irc_bridge::domain::delivery::RetryPolicy;
+use irc_bridge::domain::{Network, RetryPolicy};
 use irc_bridge::entrypoints::delivery_worker;
 use irc_bridge::entrypoints::irc::IrcEntrypoint;
 use irc_bridge::entrypoints::matrix::MatrixEntrypoint;

@@ -6,8 +6,7 @@ use async_trait::async_trait;
 use irc::client::Sender;
 
 use crate::application::ports::MessageSender;
-use crate::domain::channel::{Channel, IrcChannelName};
-use crate::domain::delivery::Delivery;
+use crate::domain::{Channel, Delivery, IrcChannelName};
 
 const MAX_LINE_BYTES: usize = 400;
 
@@ -65,6 +64,7 @@ impl MessageSender for IrcMessageSender {
             .max(64);
         for line in message
             .body()
+            .as_str()
             .lines()
             .filter(|line| !line.trim().is_empty())
         {

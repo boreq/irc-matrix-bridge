@@ -12,8 +12,7 @@ use matrix_sdk::{Client, RoomState};
 
 use crate::application::ports::MessageSender;
 use crate::config::MatrixConfig;
-use crate::domain::channel::Channel;
-use crate::domain::delivery::Delivery;
+use crate::domain::{Channel, Delivery};
 
 pub struct MatrixConnection {
     pub client: Client,
