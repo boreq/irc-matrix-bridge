@@ -122,7 +122,7 @@ mod tests {
     use crate::domain::channel::IrcChannelName;
 
     fn matrix(room: &str) -> Channel {
-        Channel::Matrix(MatrixRoom::new(room))
+        Channel::Matrix(MatrixRoom::new(room).unwrap())
     }
 
     fn irc_channel(name: &str) -> IrcChannel {
@@ -139,7 +139,7 @@ mod tests {
     fn bridge(name: &str, room: &str, channel: &str) -> Bridge {
         Bridge::new(
             BridgeName::new(name).unwrap(),
-            MatrixRoom::new(room),
+            MatrixRoom::new(room).unwrap(),
             irc_channel(channel),
         )
     }

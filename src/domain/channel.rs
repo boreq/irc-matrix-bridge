@@ -34,8 +34,18 @@ pub struct MatrixRoom {
 }
 
 impl MatrixRoom {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self { id: id.into() }
+    pub fn new(id: &str) -> Result<Self> {
+        if !id.starts_with('!') {
+            return Err(Error::Unknown(anyhow!(
+                "matrix room id `{id}` must start with `!`"
+            )));
+        }
+        if id.len() > 255 {
+            return Err(Error::Unknown(anyhow!(
+                "matrix room id `{id}` is longer than 255 bytes"
+            )));
+        }
+        Ok(Self { id: id.to_owned() })
     }
 
     pub fn id(&self) -> &str {
@@ -129,6 +139,21 @@ impl fmt::Display for Network {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matrix_room_id_must_start_with_a_bang_and_fit_255_bytes() {
+        let too_long = format!("!{}", "a".repeat(255));
+        let cases = [
+            ("!room:example.org", true),
+            ("!r0oJFfidHsLY6yUNkH6HePF-FTUo6a2MfuLuOvRtra8", true),
+            ("", false),
+            ("#room:example.org", false),
+            (too_long.as_str(), false),
+        ];
+        for (id, valid) in cases {
+            assert_eq!(MatrixRoom::new(id).is_ok(), valid, "{id:?}");
+        }
+    }
 
     #[test]
     fn irc_channel_name_must_be_non_empty_and_start_with_a_channel_prefix() {

@@ -321,7 +321,7 @@ fn channel_columns(channel: &Channel) -> (String, String) {
 
 fn channel_from_columns(network: &str, name: String) -> anyhow::Result<Channel> {
     if network == "matrix" {
-        return Ok(Channel::Matrix(MatrixRoom::new(name)));
+        return Ok(Channel::Matrix(MatrixRoom::new(&name)?));
     }
     let irc_network = network
         .strip_prefix("irc:")
@@ -338,7 +338,7 @@ mod tests {
 
     fn message(external_id: Option<&str>) -> Message {
         Message::new(
-            Channel::Matrix(MatrixRoom::new("!room:example.org")),
+            Channel::Matrix(MatrixRoom::new("!room:example.org").unwrap()),
             external_id.map(Into::into),
             "alice".into(),
             MessageKind::Action,

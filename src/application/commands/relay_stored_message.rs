@@ -221,7 +221,7 @@ mod tests {
         Delivery::new(
             id(n),
             Message::new(
-                Channel::Matrix(MatrixRoom::new("!room")),
+                Channel::Matrix(MatrixRoom::new("!room").unwrap()),
                 None,
                 "alice".into(),
                 MessageKind::Normal,

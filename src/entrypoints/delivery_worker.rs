@@ -136,7 +136,7 @@ mod tests {
         let repository = Arc::new(SqliteMessageRepository::in_memory().unwrap());
         for _ in 0..2 {
             let message = Message::new(
-                Channel::Matrix(MatrixRoom::new("!room")),
+                Channel::Matrix(MatrixRoom::new("!room").unwrap()),
                 None,
                 "alice".into(),
                 MessageKind::Normal,

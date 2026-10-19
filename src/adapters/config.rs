@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use anyhow::Context;
-use matrix_sdk::ruma::OwnedRoomId;
 use serde::Deserialize;
 
 use crate::config::{Config, IrcNetworkConfig, MatrixConfig};
@@ -133,17 +132,19 @@ fn default_tls() -> bool {
 #[serde(deny_unknown_fields)]
 struct TomlBridge {
     name: String,
-    matrix: OwnedRoomId,
+    matrix: String,
     irc: TomlIrcChannel,
 }
 
 impl TomlBridge {
     fn into_bridge(self) -> anyhow::Result<Bridge> {
-        let channel = IrcChannelName::new(&self.irc.channel)
-            .with_context(|| format!("bridge `{}`", self.name))?;
+        let context = || format!("bridge `{}`", self.name);
+        let name = BridgeName::new(&self.name)?;
+        let room = MatrixRoom::new(&self.matrix).with_context(context)?;
+        let channel = IrcChannelName::new(&self.irc.channel).with_context(context)?;
         Ok(Bridge::new(
-            BridgeName::new(&self.name)?,
-            MatrixRoom::new(self.matrix.as_str()),
+            name,
+            room,
             IrcChannel::new(IrcNetworkName::new(self.irc.network), channel),
         ))
     }

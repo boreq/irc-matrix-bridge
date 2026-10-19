@@ -133,8 +133,15 @@ async fn on_room_message(
         _ => event.sender.localpart().to_owned(),
     };
 
+    let source = match MatrixRoom::new(room.room_id().as_str()) {
+        Ok(source) => source,
+        Err(error) => {
+            tracing::error!(room_id = %room.room_id(), "{error:#}");
+            return;
+        }
+    };
     let message = Message::new(
-        Channel::Matrix(MatrixRoom::new(room.room_id().as_str())),
+        Channel::Matrix(source),
         Some(event.event_id.to_string()),
         sender,
         kind,
