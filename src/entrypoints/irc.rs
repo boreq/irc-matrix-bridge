@@ -15,9 +15,12 @@ use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler, StoreReceivedMessageOutcome,
 };
 use crate::application::ports::DeliveryWaker;
+use crate::application::queries::who_is_on_the_other_side::{
+    WhoIsOnTheOtherSide, WhoIsOnTheOtherSideHandler,
+};
 use crate::config::IrcNetworkConfig;
 use crate::domain::{
-    Channel, IrcChannel, IrcChannelName, Message, MessageBody, MessageKind, Network,
+    BotCommand, Channel, IrcChannel, IrcChannelName, Message, MessageBody, MessageKind, Network,
 };
 
 pub struct IrcEntrypoint {
@@ -27,6 +30,7 @@ pub struct IrcEntrypoint {
     pub client_cert: PathBuf,
     pub channels: Vec<IrcChannelName>,
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
+    pub who_is_on_the_other_side: Arc<WhoIsOnTheOtherSideHandler>,
     pub sender: Arc<IrcMessageSender>,
     pub waker: Arc<dyn DeliveryWaker>,
 }
@@ -81,7 +85,8 @@ impl IrcEntrypoint {
         let mut client = Client::from_config(self.client_config(client_cert)).await?;
         client.identify()?;
         let mut stream = client.stream()?;
-        self.sender.connected(client.sender());
+        let client = Arc::new(client);
+        self.sender.connected(client.clone());
         tracing::info!(network = %self.config.name(), "connected to irc");
 
         while let Some(message) = stream.next().await.transpose()? {
@@ -151,26 +156,43 @@ impl IrcEntrypoint {
                 let Some((kind, body)) = parse_privmsg(text) else {
                     return;
                 };
-                self.store(channel, nick, kind, body).await;
+                let channel = IrcChannel::new(self.config.name().clone(), channel);
+                let message = Message::new(
+                    Channel::Irc(channel.clone()),
+                    None,
+                    nick.to_owned(),
+                    kind,
+                    body,
+                );
+                match message.command() {
+                    Some(BotCommand::WhoIsOnTheOtherSide) => {
+                        self.who_is_on_the_other_side(channel).await
+                    }
+                    None => self.store(channel.name(), message).await,
+                }
             }
             _ => {}
         }
     }
 
-    async fn store(
-        &self,
-        channel: IrcChannelName,
-        nick: &str,
-        kind: MessageKind,
-        body: MessageBody,
-    ) {
-        let message = Message::new(
-            Channel::Irc(IrcChannel::new(self.config.name().clone(), channel.clone())),
-            None,
-            nick.to_owned(),
-            kind,
-            body,
-        );
+    async fn who_is_on_the_other_side(&self, channel: IrcChannel) {
+        let query = WhoIsOnTheOtherSide {
+            channel: Channel::Irc(channel.clone()),
+        };
+        let members = match self.who_is_on_the_other_side.handle(query).await {
+            Ok(Some(members)) => members,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(network = %self.config.name(), channel = %channel.name(), "listing the other side failed: {error:#}");
+                return;
+            }
+        };
+        if let Err(error) = self.sender.notice(channel.name(), &members.reply()) {
+            tracing::warn!(network = %self.config.name(), channel = %channel.name(), "replying failed: {error:#}");
+        }
+    }
+
+    async fn store(&self, channel: &IrcChannelName, message: Message) {
         match self
             .store_received_message
             .handle(StoreReceivedMessage { message })

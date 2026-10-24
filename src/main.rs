@@ -15,8 +15,11 @@ use irc_bridge::adapters::sqlite::SqliteMessageRepository;
 use irc_bridge::adapters::waker::NotifyWaker;
 use irc_bridge::application::commands::relay_stored_message::RelayStoredMessageHandler;
 use irc_bridge::application::commands::store_received_message::StoreReceivedMessageHandler;
-use irc_bridge::application::ports::{Clock, DeliveryWaker, MessageRepository, MessageSender};
+use irc_bridge::application::ports::{
+    Clock, DeliveryWaker, MemberLister, MessageRepository, MessageSender,
+};
 use irc_bridge::application::queries::pending_destinations::PendingDestinationsHandler;
+use irc_bridge::application::queries::who_is_on_the_other_side::WhoIsOnTheOtherSideHandler;
 use irc_bridge::domain::{Network, RetryPolicy};
 use irc_bridge::entrypoints::delivery_worker;
 use irc_bridge::entrypoints::irc::IrcEntrypoint;
@@ -62,16 +65,27 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let matrix = irc_bridge::adapters::matrix::connect(config.matrix()).await?;
+    let matrix_sender = Arc::new(MatrixMessageSender::new(matrix.client.clone()));
     let mut senders: HashMap<Network, Arc<dyn MessageSender>> = HashMap::new();
-    senders.insert(
-        Network::Matrix,
-        Arc::new(MatrixMessageSender::new(matrix.client.clone())),
-    );
+    let mut member_listers: HashMap<Network, Arc<dyn MemberLister>> = HashMap::new();
+    senders.insert(Network::Matrix, matrix_sender.clone());
+    member_listers.insert(Network::Matrix, matrix_sender);
 
-    let mut tasks = JoinSet::new();
+    let mut irc_senders = Vec::new();
     for irc in config.irc_networks() {
         let sender = Arc::new(IrcMessageSender::default());
-        senders.insert(Network::Irc(irc.name().clone()), sender.clone());
+        let network = Network::Irc(irc.name().clone());
+        senders.insert(network.clone(), sender.clone());
+        member_listers.insert(network, sender.clone());
+        irc_senders.push((irc, sender));
+    }
+    let who_is_on_the_other_side = Arc::new(WhoIsOnTheOtherSideHandler::new(
+        bridges.clone(),
+        member_listers,
+    ));
+
+    let mut tasks = JoinSet::new();
+    for (irc, sender) in irc_senders {
         tasks.spawn(
             IrcEntrypoint {
                 channels: bridges
@@ -83,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
                     .with_file_name(format!("irc-{}.pem", irc.name())),
                 config: irc.clone(),
                 store_received_message: store_received_message.clone(),
+                who_is_on_the_other_side: who_is_on_the_other_side.clone(),
                 sender,
                 waker: waker.clone(),
             }
@@ -120,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
             rooms,
             skip_backlog: matrix.fresh_login,
             store_received_message,
+            who_is_on_the_other_side,
             waker,
         }
         .run(),

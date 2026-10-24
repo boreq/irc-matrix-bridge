@@ -8,11 +8,11 @@ use matrix_sdk::ruma::events::room::message::RoomMessageEventContent;
 use matrix_sdk::ruma::{OwnedTransactionId, RoomId};
 use matrix_sdk::store::RoomLoadSettings;
 use matrix_sdk::utils::UrlOrQuery;
-use matrix_sdk::{Client, RoomState};
+use matrix_sdk::{Client, Room, RoomMemberships, RoomState};
 
-use crate::application::ports::MessageSender;
+use crate::application::ports::{MemberLister, MessageSender};
 use crate::config::MatrixConfig;
-use crate::domain::{Channel, Delivery};
+use crate::domain::{Channel, Delivery, MemberName};
 
 pub struct MatrixConnection {
     pub client: Client,
@@ -118,13 +118,10 @@ impl MatrixMessageSender {
     pub fn new(client: Client) -> Self {
         Self { client }
     }
-}
 
-#[async_trait]
-impl MessageSender for MatrixMessageSender {
-    async fn send(&self, delivery: &Delivery) -> anyhow::Result<()> {
-        let Channel::Matrix(room) = delivery.destination() else {
-            bail!("{} is not a matrix room", delivery.destination());
+    fn joined_room(&self, channel: &Channel) -> anyhow::Result<Room> {
+        let Channel::Matrix(room) = channel else {
+            bail!("{channel} is not a matrix room");
         };
         let room_id = RoomId::parse(room.id())?;
         let Some(room) = self.client.get_room(&room_id) else {
@@ -133,6 +130,14 @@ impl MessageSender for MatrixMessageSender {
         if room.state() != RoomState::Joined {
             bail!("not joined to {room_id}");
         }
+        Ok(room)
+    }
+}
+
+#[async_trait]
+impl MessageSender for MatrixMessageSender {
+    async fn send(&self, delivery: &Delivery) -> anyhow::Result<()> {
+        let room = self.joined_room(delivery.destination())?;
 
         let txn_id = OwnedTransactionId::from(format!("irc-bridge-{}", delivery.id()));
         room.send(RoomMessageEventContent::text_plain(
@@ -141,5 +146,20 @@ impl MessageSender for MatrixMessageSender {
         .with_transaction_id(txn_id)
         .await?;
         Ok(())
+    }
+}
+
+#[async_trait]
+impl MemberLister for MatrixMessageSender {
+    async fn members(&self, channel: &Channel) -> anyhow::Result<Vec<MemberName>> {
+        let room = self.joined_room(channel)?;
+        let me = self.client.user_id();
+        Ok(room
+            .members(RoomMemberships::JOIN)
+            .await?
+            .iter()
+            .filter(|member| Some(member.user_id()) != me)
+            .filter_map(|member| MemberName::new(member.name()).ok())
+            .collect())
     }
 }

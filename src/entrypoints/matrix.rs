@@ -5,15 +5,20 @@ use std::time::Duration;
 use matrix_sdk::config::SyncSettings;
 use matrix_sdk::ruma::OwnedRoomId;
 use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
-use matrix_sdk::ruma::events::room::message::{MessageType, OriginalSyncRoomMessageEvent};
+use matrix_sdk::ruma::events::room::message::{
+    MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
+};
 use matrix_sdk::{Client, Room, RoomState};
 
 use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler,
 };
 use crate::application::ports::DeliveryWaker;
+use crate::application::queries::who_is_on_the_other_side::{
+    WhoIsOnTheOtherSide, WhoIsOnTheOtherSideHandler,
+};
 use crate::domain::{
-    Channel, MatrixEventId, MatrixRoom, Message, MessageBody, MessageKind, Network,
+    BotCommand, Channel, MatrixEventId, MatrixRoom, Message, MessageBody, MessageKind, Network,
 };
 
 pub struct MatrixEntrypoint {
@@ -21,6 +26,7 @@ pub struct MatrixEntrypoint {
     pub rooms: Vec<OwnedRoomId>,
     pub skip_backlog: bool,
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
+    pub who_is_on_the_other_side: Arc<WhoIsOnTheOtherSideHandler>,
     pub waker: Arc<dyn DeliveryWaker>,
 }
 
@@ -66,18 +72,20 @@ impl MatrixEntrypoint {
     fn register_handlers(&self) {
         let rooms: Arc<HashSet<OwnedRoomId>> = Arc::new(self.rooms.iter().cloned().collect());
 
-        let handler = self.store_received_message.clone();
+        let store = self.store_received_message.clone();
+        let who = self.who_is_on_the_other_side.clone();
         let bridged = rooms.clone();
         self.client.add_event_handler(
             move |event: OriginalSyncRoomMessageEvent, room: Room, client: Client| {
-                let handler = handler.clone();
+                let store = store.clone();
+                let who = who.clone();
                 let bridged = bridged.clone();
                 async move {
                     if !bridged.contains(room.room_id()) || client.user_id() == Some(&event.sender)
                     {
                         return;
                     }
-                    on_room_message(event, room, &handler).await;
+                    on_room_message(event, room, &store, &who).await;
                 }
             },
         );
@@ -111,7 +119,8 @@ impl MatrixEntrypoint {
 async fn on_room_message(
     event: OriginalSyncRoomMessageEvent,
     room: Room,
-    handler: &StoreReceivedMessageHandler,
+    store: &StoreReceivedMessageHandler,
+    who: &WhoIsOnTheOtherSideHandler,
 ) {
     let (kind, body) = match &event.content.msgtype {
         MessageType::Emote(emote) => (MessageKind::Action, emote.body.clone()),
@@ -147,7 +156,33 @@ async fn on_room_message(
         }
     };
     let message = Message::new(Channel::Matrix(source), Some(event_id), sender, kind, body);
-    if let Err(error) = handler.handle(StoreReceivedMessage { message }).await {
-        tracing::error!(room_id = %room.room_id(), "storing message failed: {error:#}");
+    match message.command() {
+        Some(BotCommand::WhoIsOnTheOtherSide) => {
+            who_is_on_the_other_side(message.source().clone(), &room, who).await
+        }
+        None => {
+            if let Err(error) = store.handle(StoreReceivedMessage { message }).await {
+                tracing::error!(room_id = %room.room_id(), "storing message failed: {error:#}");
+            }
+        }
+    }
+}
+
+async fn who_is_on_the_other_side(
+    channel: Channel,
+    room: &Room,
+    handler: &WhoIsOnTheOtherSideHandler,
+) {
+    let members = match handler.handle(WhoIsOnTheOtherSide { channel }).await {
+        Ok(Some(members)) => members,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(room_id = %room.room_id(), "listing the other side failed: {error:#}");
+            return;
+        }
+    };
+    let reply = RoomMessageEventContent::notice_plain(members.reply());
+    if let Err(error) = room.send(reply).await {
+        tracing::warn!(room_id = %room.room_id(), "replying failed: {error:#}");
     }
 }

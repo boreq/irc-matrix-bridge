@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use crate::domain::time::DateTime;
-use crate::domain::{Channel, Delivery, Message, MessageId, Network};
+use crate::domain::{Channel, Delivery, MemberName, Message, MessageId, Network};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StoreOutcome {
@@ -39,6 +39,11 @@ pub trait MessageRepository: Send + Sync {
 #[async_trait]
 pub trait MessageSender: Send + Sync {
     async fn send(&self, delivery: &Delivery) -> anyhow::Result<()>;
+}
+
+#[async_trait]
+pub trait MemberLister: Send + Sync {
+    async fn members(&self, channel: &Channel) -> anyhow::Result<Vec<MemberName>>;
 }
 
 pub trait DeliveryWaker: Send + Sync {

@@ -281,6 +281,13 @@ impl Message {
     pub fn relay_text(&self) -> String {
         self.relay_line(self.body.as_str())
     }
+
+    pub fn command(&self) -> Option<BotCommand> {
+        match self.kind {
+            MessageKind::Normal => BotCommand::parse(&self.body),
+            MessageKind::Action => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -331,6 +338,60 @@ impl MessageBody {
 
     pub fn as_str(&self) -> &str {
         &self.text
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BotCommand {
+    WhoIsOnTheOtherSide,
+}
+
+impl BotCommand {
+    fn parse(body: &MessageBody) -> Option<Self> {
+        match body.as_str().trim() {
+            ":whoisontheotherside" | ":bridge" => Some(Self::WhoIsOnTheOtherSide),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Members {
+    names: Vec<MemberName>,
+}
+
+impl Members {
+    pub fn new(mut names: Vec<MemberName>) -> Self {
+        names.sort_by_cached_key(|name| name.name.to_lowercase());
+        Self { names }
+    }
+
+    pub fn reply(&self) -> String {
+        if self.names.is_empty() {
+            return "nobody is on the other side".into();
+        }
+        let names: Vec<&str> = self.names.iter().map(MemberName::as_str).collect();
+        format!("on the other side ({}): {}", names.len(), names.join(", "))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberName {
+    name: String,
+}
+
+impl MemberName {
+    pub fn new(name: &str) -> Result<Self> {
+        if name.trim().is_empty() {
+            return Err(Error::Unknown(anyhow!("member name is empty")));
+        }
+        Ok(Self {
+            name: name.to_owned(),
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.name
     }
 }
 
@@ -494,12 +555,25 @@ mod tests {
     }
 
     fn message(kind: MessageKind) -> Message {
+        message_with_body(kind, "hello")
+    }
+
+    fn message_with_body(kind: MessageKind, body: &str) -> Message {
         Message::new(
             irc("#channel"),
             None,
             "alice".into(),
             kind,
-            MessageBody::new("hello").unwrap(),
+            MessageBody::new(body).unwrap(),
+        )
+    }
+
+    fn members(names: &[&str]) -> Members {
+        Members::new(
+            names
+                .iter()
+                .map(|name| MemberName::new(name).unwrap())
+                .collect(),
         )
     }
 
@@ -549,6 +623,38 @@ mod tests {
     fn prepends_sender_nick() {
         assert_eq!(message(MessageKind::Normal).relay_text(), "<alice> hello");
         assert_eq!(message(MessageKind::Action).relay_text(), "* alice hello");
+    }
+
+    #[test]
+    fn recognizes_bot_commands() {
+        let who = Some(BotCommand::WhoIsOnTheOtherSide);
+        let cases = [
+            (MessageKind::Normal, ":whoisontheotherside", who),
+            (MessageKind::Normal, " :bridge ", who),
+            (MessageKind::Normal, ":bridge please", None),
+            (MessageKind::Normal, "bridge", None),
+            (MessageKind::Action, ":bridge", None),
+        ];
+        for (kind, body, command) in cases {
+            assert_eq!(message_with_body(kind, body).command(), command, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn lists_members_alphabetically() {
+        assert_eq!(
+            members(&["carol", "Bob", "alice"]).reply(),
+            "on the other side (3): alice, Bob, carol"
+        );
+        assert_eq!(members(&[]).reply(), "nobody is on the other side");
+    }
+
+    #[test]
+    fn member_name_must_not_be_blank() {
+        let cases = [("alice", true), ("", false), (" ", false)];
+        for (name, valid) in cases {
+            assert_eq!(MemberName::new(name).is_ok(), valid, "{name:?}");
+        }
     }
 
     #[test]
