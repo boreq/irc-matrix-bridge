@@ -98,6 +98,7 @@ impl IrcEntrypoint {
         let config = &self.config;
         IrcClientConfig {
             nickname: Some(config.nickname().to_owned()),
+            ping_time: Some(60),
             alt_nicks: vec![
                 format!("{}_", config.nickname()),
                 format!("{}__", config.nickname()),
