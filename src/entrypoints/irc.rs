@@ -14,7 +14,7 @@ use crate::adapters::irc::IrcMessageSender;
 use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler, StoreReceivedMessageOutcome,
 };
-use crate::application::ports::DeliveryWaker;
+use crate::application::ports::{ConnectionHealth, DeliveryWaker};
 use crate::config::IrcNetworkConfig;
 use crate::domain::{
     Channel, IrcChannel, IrcChannelName, Message, MessageBody, MessageKind, Network,
@@ -29,6 +29,7 @@ pub struct IrcEntrypoint {
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
     pub sender: Arc<IrcMessageSender>,
     pub waker: Arc<dyn DeliveryWaker>,
+    pub health: Arc<dyn ConnectionHealth>,
 }
 
 impl IrcEntrypoint {
@@ -85,6 +86,8 @@ impl IrcEntrypoint {
         tracing::info!(network = %self.config.name(), "connected to irc");
 
         while let Some(message) = stream.next().await.transpose()? {
+            self.health
+                .record_healthy(&Network::Irc(self.config.name().clone()));
             tracing::debug!(network = %self.config.name(), "[RECV] {}", message.to_string().trim_end());
             self.on_message(&client, message).await;
         }

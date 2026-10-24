@@ -1,7 +1,9 @@
 use async_trait::async_trait;
 
+use crate::domain::metrics::PendingDestination;
 use crate::domain::time::DateTime;
 use crate::domain::{Channel, Delivery, Message, MessageId, Network};
+use crate::errors::Result;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum StoreOutcome {
@@ -47,4 +49,14 @@ pub trait DeliveryWaker: Send + Sync {
 
 pub trait Clock: Send + Sync {
     fn now(&self) -> DateTime;
+}
+
+#[async_trait]
+pub trait QueueStatsReader: Send + Sync {
+    async fn oldest_pending(&self) -> Result<Vec<PendingDestination>>;
+}
+
+pub trait ConnectionHealth: Send + Sync {
+    fn record_healthy(&self, network: &Network);
+    fn last_healthy(&self, network: &Network) -> Option<DateTime>;
 }

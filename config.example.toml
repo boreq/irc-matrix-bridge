@@ -1,5 +1,8 @@
 database = "data/bridge.db"
 debug = false
+# Optional Prometheus endpoint at /metrics. Disabled when omitted.
+# Use 0.0.0.0:9090 for container scraping; restrict access at the network level.
+metrics_listen = "127.0.0.1:9090"
 
 [matrix]
 homeserver = "https://matrix.example.org"
