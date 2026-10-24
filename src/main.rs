@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use irc_bridge::adapters::clock::SystemClock;
 use irc_bridge::adapters::config::TomlConfigLoader;
+use irc_bridge::adapters::connection_health::InMemoryConnectionHealth;
 use irc_bridge::adapters::irc::IrcMessageSender;
 use irc_bridge::adapters::matrix::MatrixMessageSender;
 use irc_bridge::adapters::sqlite::SqliteMessageRepository;
@@ -16,8 +17,9 @@ use irc_bridge::adapters::waker::NotifyWaker;
 use irc_bridge::application::commands::relay_stored_message::RelayStoredMessageHandler;
 use irc_bridge::application::commands::store_received_message::StoreReceivedMessageHandler;
 use irc_bridge::application::ports::{
-    Clock, DeliveryWaker, MemberLister, MessageRepository, MessageSender,
+    Clock, ConnectionHealth, DeliveryWaker, MemberLister, MessageSender,
 };
+use irc_bridge::application::queries::bridge_metrics::BridgeMetricsHandler;
 use irc_bridge::application::queries::pending_destinations::PendingDestinationsHandler;
 use irc_bridge::application::queries::who_is_on_the_other_side::WhoIsOnTheOtherSideHandler;
 use irc_bridge::domain::{Network, RetryPolicy};
@@ -43,9 +45,23 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
     let bridges = Arc::new(config.bridges().clone());
 
-    let repository: Arc<dyn MessageRepository> =
-        Arc::new(SqliteMessageRepository::open(config.database())?);
+    let repository = Arc::new(SqliteMessageRepository::open(config.database())?);
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+    let health: Arc<dyn ConnectionHealth> = Arc::new(InMemoryConnectionHealth::new(clock.clone()));
+    let mut tasks = JoinSet::new();
+    if let Some(address) = config.metrics_listen() {
+        let listener = tokio::net::TcpListener::bind(address)
+            .await
+            .with_context(|| format!("binding metrics listener {address}"))?;
+        tracing::info!(address = %listener.local_addr()?, "metrics endpoint listening at /metrics");
+        let handler = Arc::new(BridgeMetricsHandler::new(
+            bridges.clone(),
+            repository.clone(),
+            health.clone(),
+            clock.clone(),
+        ));
+        tasks.spawn(irc_bridge::entrypoints::metrics::run(listener, handler));
+    }
 
     let mut networks = vec![Network::Matrix];
     networks.extend(
@@ -84,7 +100,6 @@ async fn main() -> anyhow::Result<()> {
         member_listers,
     ));
 
-    let mut tasks = JoinSet::new();
     for (irc, sender) in irc_senders {
         tasks.spawn(
             IrcEntrypoint {
@@ -100,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
                 who_is_on_the_other_side: who_is_on_the_other_side.clone(),
                 sender,
                 waker: waker.clone(),
+                health: health.clone(),
             }
             .run(),
         );
@@ -137,6 +153,7 @@ async fn main() -> anyhow::Result<()> {
             store_received_message,
             who_is_on_the_other_side,
             waker,
+            health,
         }
         .run(),
     );

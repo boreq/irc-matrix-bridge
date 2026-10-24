@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use crate::domain::{Bridges, IrcNetworkName};
@@ -9,6 +10,7 @@ pub struct Config {
     irc_networks: Vec<IrcNetworkConfig>,
     bridges: Bridges,
     debug: bool,
+    metrics_listen: Option<SocketAddr>,
 }
 
 impl Config {
@@ -18,6 +20,7 @@ impl Config {
         irc_networks: Vec<IrcNetworkConfig>,
         bridges: Bridges,
         debug: bool,
+        metrics_listen: Option<SocketAddr>,
     ) -> anyhow::Result<Self> {
         for bridge in bridges.iter() {
             let network = bridge.irc().network();
@@ -33,6 +36,7 @@ impl Config {
             irc_networks,
             bridges,
             debug,
+            metrics_listen,
         })
     }
 
@@ -50,6 +54,10 @@ impl Config {
 
     pub fn bridges(&self) -> &Bridges {
         &self.bridges
+    }
+
+    pub fn metrics_listen(&self) -> Option<SocketAddr> {
+        self.metrics_listen
     }
 
     pub fn debug(&self) -> bool {

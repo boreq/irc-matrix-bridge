@@ -6,7 +6,8 @@ use async_trait::async_trait;
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::application::ports::{MessageRepository, StoreOutcome};
+use crate::application::ports::{MessageRepository, QueueStatsReader, StoreOutcome};
+use crate::domain::metrics::PendingDestination;
 use crate::domain::time::DateTime;
 use crate::domain::{
     Channel, Delivery, IrcChannel, IrcChannelName, IrcNetworkName, MatrixEventId, MatrixRoom,
@@ -286,6 +287,37 @@ impl MessageRepository for SqliteMessageRepository {
     }
 }
 
+#[async_trait]
+impl QueueStatsReader for SqliteMessageRepository {
+    async fn oldest_pending(&self) -> crate::errors::Result<Vec<PendingDestination>> {
+        Ok(self
+            .with_conn(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT destination_network, destination_channel, MIN(received_at)
+                 FROM messages WHERE status = 'pending'
+                 GROUP BY destination_network, destination_channel",
+                )?;
+                let rows = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?;
+                rows.map(|row| {
+                    let (network, channel, received_at) = row?;
+                    Ok(PendingDestination::new(
+                        channel_from_columns(&network, channel)?,
+                        DateTime::from_unix_millis(received_at)
+                            .with_context(|| format!("invalid timestamp {received_at}"))?,
+                    ))
+                })
+                .collect()
+            })
+            .await?)
+    }
+}
+
 fn id_from_column(id: &str) -> anyhow::Result<MessageId> {
     let uuid = Uuid::parse_str(id).with_context(|| format!("invalid message id `{id}`"))?;
     Ok(MessageId::new(uuid))
@@ -357,6 +389,51 @@ mod tests {
 
     fn at(unix_millis: i64) -> DateTime {
         DateTime::from_unix_millis(unix_millis).unwrap()
+    }
+
+    #[tokio::test]
+    async fn queue_statistics_survive_reopen_and_include_retries_not_finished_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("queue.db");
+        let repo = SqliteMessageRepository::open(&path).unwrap();
+        let retry = MessageId::generate();
+        let delivered = MessageId::generate();
+        let failed = MessageId::generate();
+        for (id, received) in [(retry, 2_000), (delivered, 0), (failed, 1_000)] {
+            repo.store(id, &message(None), &irc("#a"), at(received))
+                .await
+                .unwrap();
+        }
+        repo.schedule_retry(retry, 1, at(100_000), "offline")
+            .await
+            .unwrap();
+        repo.mark_delivered(delivered, at(3_000)).await.unwrap();
+        repo.mark_failed(failed, 30, "gave up").await.unwrap();
+        repo.store(MessageId::generate(), &message(None), &irc("#b"), at(4_000))
+            .await
+            .unwrap();
+        drop(repo);
+        let repo = SqliteMessageRepository::open(&path).unwrap();
+        let stats = repo.oldest_pending().await.unwrap();
+        assert_eq!(stats.len(), 2);
+        assert_eq!(
+            stats
+                .iter()
+                .find(|s| s.destination() == &irc("#a"))
+                .unwrap()
+                .received_at(),
+            at(2_000)
+        );
+        assert_eq!(
+            stats
+                .iter()
+                .find(|s| s.destination() == &irc("#b"))
+                .unwrap()
+                .received_at(),
+            at(4_000)
+        );
+        repo.mark_delivered(retry, at(5_000)).await.unwrap();
+        assert_eq!(repo.oldest_pending().await.unwrap().len(), 1);
     }
 
     #[tokio::test]

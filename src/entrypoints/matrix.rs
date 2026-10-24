@@ -8,12 +8,12 @@ use matrix_sdk::ruma::events::room::member::StrippedRoomMemberEvent;
 use matrix_sdk::ruma::events::room::message::{
     MessageType, OriginalSyncRoomMessageEvent, RoomMessageEventContent,
 };
-use matrix_sdk::{Client, Room, RoomState};
+use matrix_sdk::{Client, LoopCtrl, Room, RoomState};
 
 use crate::application::commands::store_received_message::{
     StoreReceivedMessage, StoreReceivedMessageHandler,
 };
-use crate::application::ports::DeliveryWaker;
+use crate::application::ports::{ConnectionHealth, DeliveryWaker};
 use crate::application::queries::who_is_on_the_other_side::{
     WhoIsOnTheOtherSide, WhoIsOnTheOtherSideHandler,
 };
@@ -28,21 +28,30 @@ pub struct MatrixEntrypoint {
     pub store_received_message: Arc<StoreReceivedMessageHandler>,
     pub who_is_on_the_other_side: Arc<WhoIsOnTheOtherSideHandler>,
     pub waker: Arc<dyn DeliveryWaker>,
+    pub health: Arc<dyn ConnectionHealth>,
 }
 
 impl MatrixEntrypoint {
     pub async fn run(self) {
-        if self.skip_backlog
-            && let Err(error) = self.client.sync_once(SyncSettings::default()).await
-        {
-            tracing::warn!("initial matrix sync failed: {error}");
+        if self.skip_backlog {
+            match self.client.sync_once(SyncSettings::default()).await {
+                Ok(_) => self.health.record_healthy(&Network::Matrix),
+                Err(error) => tracing::warn!("initial matrix sync failed: {error}"),
+            }
         }
 
         self.join_rooms().await;
         self.register_handlers();
 
         loop {
-            if let Err(error) = self.client.sync(SyncSettings::default()).await {
+            if let Err(error) = self
+                .client
+                .sync_with_callback(SyncSettings::default(), |_| async {
+                    self.health.record_healthy(&Network::Matrix);
+                    LoopCtrl::Continue
+                })
+                .await
+            {
                 tracing::warn!("matrix sync stopped: {error}, restarting");
             }
             tokio::time::sleep(Duration::from_secs(5)).await;

@@ -1,3 +1,4 @@
+pub mod metrics;
 pub mod time;
 
 use std::collections::{HashMap, HashSet};

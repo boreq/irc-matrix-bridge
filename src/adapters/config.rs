@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -41,6 +42,7 @@ struct TomlConfig {
     bridges: Vec<TomlBridge>,
     #[serde(default)]
     debug: bool,
+    metrics_listen: Option<SocketAddr>,
 }
 
 impl TomlConfig {
@@ -61,6 +63,7 @@ impl TomlConfig {
             irc_networks,
             Bridges::new(bridges)?,
             self.debug,
+            self.metrics_listen,
         )
     }
 }
@@ -191,12 +194,23 @@ irc = { network = "network", channel = "#channel" }
     fn applies_defaults() {
         let config = parse(CONFIG).unwrap();
 
+        assert_eq!(config.metrics_listen(), None);
         assert_eq!(config.matrix().device_name(), "irc-bridge");
         let irc = &config.irc_networks()[0];
         assert_eq!(irc.name(), &IrcNetworkName::new("network"));
         assert_eq!(irc.port(), 6697);
         assert!(irc.tls());
         assert_eq!(config.bridges().iter().count(), 1);
+    }
+
+    #[test]
+    fn parses_metrics_listener_and_rejects_invalid_addresses() {
+        let config = parse(&format!("metrics_listen = \"127.0.0.1:9090\"\n{CONFIG}")).unwrap();
+        assert_eq!(
+            config.metrics_listen(),
+            Some("127.0.0.1:9090".parse().unwrap())
+        );
+        assert!(parse(&format!("metrics_listen = \"invalid\"\n{CONFIG}")).is_err());
     }
 
     #[test]
